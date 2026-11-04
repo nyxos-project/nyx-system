@@ -9,6 +9,8 @@ use anyhow::{Result, bail, ensure};
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
 
+pub mod hardware;
+
 pub const BUS_NAME: &str = "io.github.nyxos_project.System";
 pub const OBJECT_PATH: &str = "/io/github/nyxos_project/System";
 pub const INTERFACE: &str = "io.github.nyxos_project.System1";
@@ -228,6 +230,9 @@ pub struct SystemSettings {
     /// Drives and shares mounted at startup, by id.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub mounts: BTreeMap<String, Mount>,
+    /// What the System Manager detected, and the driver choices made for it.
+    #[serde(default, skip_serializing_if = "hardware::Hardware::is_empty")]
+    pub hardware: hardware::Hardware,
 }
 
 fn version() -> u32 {
@@ -253,6 +258,7 @@ impl Default for SystemSettings {
             people: BTreeMap::new(),
             full_names: BTreeMap::new(),
             mounts: BTreeMap::new(),
+            hardware: hardware::Hardware::default(),
         }
     }
 }
@@ -363,6 +369,16 @@ pub enum Change {
     RemoveMount {
         id: String,
     },
+    /// What the computer has. The System Manager detects it itself; what a client sends is
+    /// replaced.
+    Hardware {
+        #[serde(default)]
+        hardware: hardware::Hardware,
+    },
+    /// NVIDIA's own driver (unfree) instead of nouveau.
+    NvidiaDriver {
+        proprietary: bool,
+    },
 }
 
 impl Change {
@@ -456,6 +472,18 @@ impl Change {
                 ensure!(valid_mount_id(id), "not a mount id: {id}");
                 Ok(())
             }
+            Change::Hardware { hardware } => {
+                let names =
+                    |s: &str| !s.is_empty() && s.len() <= 32 && s.chars().all(|c| c.is_ascii_alphanumeric() || "-_:".contains(c));
+                ensure!(
+                    hardware.gpus.iter().all(|g| names(&g.vendor) && names(&g.bus))
+                        && hardware.cpu.as_deref().is_none_or(names)
+                        && hardware.virtual_machine.as_deref().is_none_or(names),
+                    "the hardware description has something unexpected in it"
+                );
+                Ok(())
+            }
+            Change::NvidiaDriver { .. } => Ok(()),
         }
     }
 }
@@ -555,6 +583,14 @@ impl SystemSettings {
                 }
                 Change::Service { name, enabled: None } => {
                     s.services.remove(name);
+                }
+                Change::Hardware { hardware } => {
+                    let proprietary = s.hardware.nvidia_proprietary;
+                    s.hardware = hardware::Hardware { nvidia_proprietary: proprietary, ..hardware.clone() };
+                }
+                Change::NvidiaDriver { proprietary } => {
+                    ensure!(!*proprietary || s.hardware.has_gpu("nvidia"), "this computer has no NVIDIA graphics");
+                    s.hardware.nvidia_proprietary = *proprietary;
                 }
             }
         }

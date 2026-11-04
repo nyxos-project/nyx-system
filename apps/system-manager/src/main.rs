@@ -249,7 +249,13 @@ impl Manager {
         changes: &str,
     ) -> fdo::Result<String> {
         self.touch();
-        let changes: Vec<Change> = serde_json::from_str(changes).map_err(|e| fdo::Error::InvalidArgs(e.to_string()))?;
+        let mut changes: Vec<Change> = serde_json::from_str(changes).map_err(|e| fdo::Error::InvalidArgs(e.to_string()))?;
+        // What the computer has is the manager's own finding, never a client's.
+        for c in &mut changes {
+            if let Change::Hardware { hardware } = c {
+                *hardware = nyx_system_proto::hardware::detect(std::path::Path::new("/"));
+            }
+        }
         for c in &changes {
             c.validate().map_err(|e| fdo::Error::InvalidArgs(e.to_string()))?;
             check_against_system(c).map_err(fdo::Error::InvalidArgs)?;

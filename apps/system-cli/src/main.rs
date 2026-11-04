@@ -32,6 +32,10 @@ nyx-system: NyxOS's system settings, packages, services and generations
                                           A drive or share at startup (JSON: what,
                                           dir, fsType, options), its login from stdin
   nyx-system mount remove ID
+  nyx-system hardware                     What this computer has (graphics, processor,
+                                          battery, Bluetooth, virtual machine)
+  nyx-system hardware apply               Set NyxOS up for it (drivers, power, firmware)
+  nyx-system nvidia-driver on|off         NVIDIA's own driver (unfree) or nouveau
   nyx-system groups                       The groups NyxOS manages here
   nyx-system group add|remove GROUP USER
   nyx-system apply JSON|-                 Typed changes (nyx-system-proto's Change
@@ -266,6 +270,25 @@ async fn run(args: &[&str]) -> Result<()> {
         ["service", name, state] => apply(vec![Change::Service { name: name.to_string(), enabled: on_off(state)? }]).await?,
         ["app", name, state] => apply(vec![Change::NyxApp { name: name.to_string(), enabled: on_off(state)? }]).await?,
         ["firewall", state] => apply(vec![Change::Firewall { enabled: on_off(state)? }]).await?,
+        ["hardware"] => {
+            let h = nyx_system_proto::hardware::detect(std::path::Path::new("/"));
+            for g in &h.gpus {
+                println!("graphics    {} at {}", g.vendor, g.bus);
+            }
+            println!("processor   {}", h.cpu.as_deref().unwrap_or("unknown"));
+            println!("battery     {}", if h.battery { "yes" } else { "no" });
+            println!("bluetooth   {}", if h.bluetooth { "yes" } else { "no" });
+            println!("virtual     {}", h.virtual_machine.as_deref().unwrap_or("no"));
+        }
+        ["hardware", "apply"] => apply(vec![Change::Hardware { hardware: Default::default() }]).await?,
+        ["nvidia-driver", state] => {
+            let proprietary = match *state {
+                "on" => true,
+                "off" => false,
+                other => bail!("on or off, not {other}"),
+            };
+            apply(vec![Change::NvidiaDriver { proprietary }]).await?
+        }
         ["port", how @ ("open" | "close"), port, protocol] => {
             let port: u16 = port.parse().context("a port is a number from 1 to 65535")?;
             apply(vec![Change::FirewallPort { port, protocol: protocol.to_string(), open: *how == "open" }]).await?
