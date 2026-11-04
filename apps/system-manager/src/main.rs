@@ -275,6 +275,47 @@ impl Manager {
         result.map_err(failed)
     }
 
+    async fn collect_garbage(
+        &self,
+        #[zbus(header)] header: Header<'_>,
+        #[zbus(connection)] conn: &Connection,
+        #[zbus(signal_emitter)] emitter: SignalEmitter<'_>,
+        older_than_days: u32,
+    ) -> fdo::Result<String> {
+        self.touch();
+        let uid = authorize(conn, &header, action::CLEAN).await?;
+        let _guard = self.busy.try_lock().map_err(|_| failed("another system change is running"))?;
+        let result = rebuild::collect_garbage(&self.config, older_than_days, &emitter).await;
+        audit(
+            uid,
+            action::CLEAN,
+            &format!("collect-garbage {older_than_days}d"),
+            result.as_ref().map(String::as_str).unwrap_or("failed"),
+        );
+        self.touch();
+        result.map_err(failed)
+    }
+
+    async fn vacuum_journal(
+        &self,
+        #[zbus(header)] header: Header<'_>,
+        #[zbus(connection)] conn: &Connection,
+        #[zbus(signal_emitter)] emitter: SignalEmitter<'_>,
+        megabytes: u32,
+    ) -> fdo::Result<String> {
+        self.touch();
+        let uid = authorize(conn, &header, action::CLEAN).await?;
+        let result = rebuild::vacuum_journal(&self.config, megabytes, &emitter).await;
+        audit(
+            uid,
+            action::CLEAN,
+            &format!("vacuum-journal {megabytes}M"),
+            result.as_ref().map(String::as_str).unwrap_or("failed"),
+        );
+        self.touch();
+        result.map_err(failed)
+    }
+
     #[zbus(signal)]
     async fn progress(emitter: &SignalEmitter<'_>, line: &str) -> zbus::Result<()>;
 }

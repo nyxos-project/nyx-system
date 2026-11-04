@@ -29,6 +29,8 @@ pub mod action {
     pub const APPLY: &str = "io.github.nyxos_project.system.apply";
     /// Turning the firewall on or off, and opening ports in it.
     pub const FIREWALL: &str = "io.github.nyxos_project.system.firewall";
+    /// Removing old generations and unused packages, and old system logs.
+    pub const CLEAN: &str = "io.github.nyxos_project.system.clean";
 }
 
 /// System services the manager may turn on or off, with what each is.
@@ -497,6 +499,11 @@ pub trait System {
     fn generations(&self) -> zbus::Result<String>;
     /// Switch back to the generation before the current one.
     fn rollback(&self) -> zbus::Result<String>;
+    /// Remove generations older than this many days (never the current one) and what
+    /// nothing needs any more; refreshes the boot menu. Returns what was freed.
+    fn collect_garbage(&self, older_than_days: u32) -> zbus::Result<String>;
+    /// Shrink the system journal to this many megabytes.
+    fn vacuum_journal(&self, megabytes: u32) -> zbus::Result<String>;
     /// A line of build or switch output.
     #[zbus(signal)]
     fn progress(&self, line: &str) -> zbus::Result<()>;

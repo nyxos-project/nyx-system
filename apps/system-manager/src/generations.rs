@@ -38,6 +38,20 @@ pub fn list() -> Result<Vec<Generation>> {
     Ok(out)
 }
 
+/// Drop the settings saved for generations that are gone (`STATE/generations/N.json`).
+pub fn forget_missing(state: &Path) {
+    let kept: Vec<u32> = list().map(|l| l.into_iter().map(|g| g.number).collect()).unwrap_or_default();
+    let Ok(entries) = std::fs::read_dir(state.join("generations")) else { return };
+    for e in entries.flatten() {
+        let name = e.file_name().to_string_lossy().into_owned();
+        if let Some(n) = name.strip_suffix(".json").and_then(|n| n.parse::<u32>().ok())
+            && !kept.contains(&n)
+        {
+            let _ = std::fs::remove_file(e.path());
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     #[test]

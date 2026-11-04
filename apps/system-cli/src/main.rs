@@ -30,6 +30,9 @@ nyx-system: NyxOS's system settings, packages, services and generations
   nyx-system update                       Update NyxOS and its apps, then switch
   nyx-system generations
   nyx-system rollback                     Back to the previous generation
+  nyx-system clean [DAYS]                 Remove generations older than DAYS (14) and
+                                          packages nothing needs
+  nyx-system clean-logs [MB]              Shrink the system log to MB (200)
 
   nyx-system catalog [SECTION]            The software catalog (* installed)
   nyx-system catalog presets
@@ -293,6 +296,16 @@ async fn run(args: &[&str]) -> Result<()> {
         ["rollback"] => {
             let p = proxy().await?;
             println!("{}", with_progress(&p, p.rollback()).await?);
+        }
+        ["clean", rest @ ..] if rest.len() <= 1 => {
+            let days: u32 = rest.first().map(|d| d.parse()).transpose().context("DAYS is a number")?.unwrap_or(14);
+            let p = proxy().await?;
+            println!("{}", with_progress(&p, p.collect_garbage(days)).await?);
+        }
+        ["clean-logs", rest @ ..] if rest.len() <= 1 => {
+            let mb: u32 = rest.first().map(|d| d.parse()).transpose().context("MB is a number")?.unwrap_or(200);
+            let p = proxy().await?;
+            println!("{}", with_progress(&p, p.vacuum_journal(mb)).await?);
         }
         ["generations"] => {
             let list: Vec<Generation> = serde_json::from_str(&proxy().await?.generations().await?)?;

@@ -11,7 +11,7 @@ use zbus::object_server::SignalEmitter;
 const PROFILE: &str = "/nix/var/nix/profiles/system";
 
 /// Run a command as root, sending each line it prints as progress.
-async fn run(emitter: &SignalEmitter<'_>, cwd: &Path, program: &str, args: &[&str]) -> Result<()> {
+pub async fn run(emitter: &SignalEmitter<'_>, cwd: &Path, program: &str, args: &[&str]) -> Result<()> {
     let _ = crate::Manager::progress(emitter, &format!("$ {program} {}", args.join(" "))).await;
     let mut child = tokio::process::Command::new(program)
         .args(args)
@@ -142,4 +142,28 @@ pub async fn rollback(config: &Config, emitter: &SignalEmitter<'_>) -> Result<St
         config.write_settings(&nyx_system_proto::SystemSettings::parse(&text)?)?;
     }
     Ok(format!("Back on generation {previous}"))
+}
+
+/// Remove system generations older than `days` (never the current one) and whatever
+/// no generation needs any more, then refresh the boot menu. Returns what nix freed.
+pub async fn collect_garbage(config: &Config, days: u32, emitter: &SignalEmitter<'_>) -> Result<String> {
+    anyhow::ensure!((1..=3650).contains(&days), "keep between a day and ten years");
+    let cwd = &config.state;
+    run(emitter, cwd, "nix-env", &["--profile", PROFILE, "--delete-generations", &format!("{days}d")]).await?;
+    let out = tokio::process::Command::new("nix-store").args(["--gc"]).current_dir(cwd).output().await?;
+    let text = String::from_utf8_lossy(&out.stdout).into_owned() + &String::from_utf8_lossy(&out.stderr);
+    for l in text.lines() {
+        let _ = crate::Manager::progress(emitter, l).await;
+    }
+    anyhow::ensure!(out.status.success(), "nix-store --gc failed");
+    run(emitter, cwd, &format!("{PROFILE}/bin/switch-to-configuration"), &["boot"]).await?;
+    generations::forget_missing(&config.state);
+    Ok(text.lines().rev().find(|l| l.contains("freed")).unwrap_or("Cleaned up").trim().to_string())
+}
+
+/// Shrink the system journal to `megabytes`.
+pub async fn vacuum_journal(config: &Config, megabytes: u32, emitter: &SignalEmitter<'_>) -> Result<String> {
+    anyhow::ensure!((50..=100_000).contains(&megabytes), "keep between 50 MB and 100 GB of logs");
+    run(emitter, &config.state, "journalctl", &[&format!("--vacuum-size={megabytes}M")]).await?;
+    Ok(format!("The system log is at most {megabytes} MB"))
 }
