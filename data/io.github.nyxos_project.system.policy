@@ -74,4 +74,13 @@
       <allow_active>auth_admin</allow_active>
     </defaults>
   </action>
+  <action id="io.github.nyxos_project.system.apply">
+    <description>Change the system</description>
+    <message>Authentication is required to apply system changes: settings, software for every user, services or group memberships</message>
+    <defaults>
+      <allow_any>no</allow_any>
+      <allow_inactive>no</allow_inactive>
+      <allow_active>auth_admin</allow_active>
+    </defaults>
+  </action>
 </policyconfig>

@@ -23,7 +23,9 @@ async fn run(emitter: &SignalEmitter<'_>, cwd: &Path, program: &str, args: &[&st
         .with_context(|| format!("can't start {program}"))?;
     let mut out = BufReader::new(child.stdout.take().unwrap()).lines();
     let mut err = BufReader::new(child.stderr.take().unwrap()).lines();
+    // The first "error:" line says why; otherwise the last line does.
     let mut last = String::new();
+    let mut error = String::new();
     let (mut out_done, mut err_done) = (false, false);
     while !(out_done && err_done) {
         tokio::select! {
@@ -33,7 +35,11 @@ async fn run(emitter: &SignalEmitter<'_>, cwd: &Path, program: &str, args: &[&st
             },
             line = err.next_line(), if !err_done => match line? {
                 Some(l) => {
-                    if !l.trim().is_empty() { last = l.clone(); }
+                    let t = l.trim();
+                    if error.is_empty() && t.starts_with("error:") {
+                        error = t.trim_start_matches("error:").trim().to_string();
+                    }
+                    if !t.is_empty() { last = t.to_string(); }
                     let _ = crate::Manager::progress(emitter, &l).await;
                 }
                 None => err_done = true,
@@ -42,7 +48,8 @@ async fn run(emitter: &SignalEmitter<'_>, cwd: &Path, program: &str, args: &[&st
     }
     let status = child.wait().await?;
     if !status.success() {
-        bail!("{program} failed: {}", if last.is_empty() { status.to_string() } else { last });
+        let why = [error, last].into_iter().find(|s| !s.is_empty()).unwrap_or_else(|| status.to_string());
+        bail!("{program} failed: {why}");
     }
     Ok(())
 }
@@ -94,7 +101,7 @@ pub async fn apply(config: &Config, changes: &[Change], emitter: &SignalEmitter<
         if generations::current() != before {
             let _ = previous_generation(emitter, &config.state).await;
         }
-        return Err(e.context("the change was undone"));
+        return Err(anyhow::anyhow!("{e:#}; the change was undone, so nothing on the system changed"));
     }
     remember(config)?;
     Ok("Applied".into())
@@ -118,7 +125,7 @@ pub async fn update(config: &Config, emitter: &SignalEmitter<'_>) -> Result<Stri
         if generations::current() != before {
             let _ = previous_generation(emitter, &config.state).await;
         }
-        return Err(e.context("the update was undone"));
+        return Err(anyhow::anyhow!("{e:#}; the update was undone"));
     }
     remember(config)?;
     Ok("Updated".into())

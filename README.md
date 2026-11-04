@@ -34,7 +34,10 @@ the settings each generation was built from, so a rollback brings them back too.
 Each method checks its caller with polkit, one action per kind of change
 (`io.github.nyxos_project.system.{settings,packages,services,groups,defaults,update,rollback}`),
 and writes an audit line to the journal. Joining a group asks for an administrator every
-time, since some (docker) are as good as root; only people's accounts are added. Clients send typed changes
+time, since some (docker) are as good as root; only people's accounts are added. A change of
+several kinds asks once: each kind's action is checked without asking (what polkit denies
+stays denied), and what still needs a password is asked for together as
+`io.github.nyxos_project.system.apply`. Clients send typed changes
 (`nyx_system_proto::Change`), never commands. One change runs at a time.
 
 ```sh

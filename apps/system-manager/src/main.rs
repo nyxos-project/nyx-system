@@ -83,8 +83,56 @@ struct Manager {
     last_use: Arc<std::sync::Mutex<Instant>>,
 }
 
+/// The error with its causes (`{:#}`), the way the person should read it.
 fn failed(e: impl std::fmt::Display) -> fdo::Error {
-    fdo::Error::Failed(e.to_string())
+    fdo::Error::Failed(format!("{e:#}"))
+}
+
+/// Polkit's answer for `action`: allowed, and whether a password would allow it.
+async fn check(conn: &Connection, sender: &str, action: &str, interactive: bool) -> fdo::Result<(bool, bool)> {
+    let mut subject: HashMap<&str, zbus::zvariant::Value> = HashMap::new();
+    subject.insert("name", zbus::zvariant::Value::from(sender));
+    let details: HashMap<&str, &str> = HashMap::new();
+    let reply = conn
+        .call_method(
+            Some("org.freedesktop.PolicyKit1"),
+            "/org/freedesktop/PolicyKit1/Authority",
+            Some("org.freedesktop.PolicyKit1.Authority"),
+            "CheckAuthorization",
+            // 1: the person may be asked.
+            &(("system-bus-name", subject), action, details, u32::from(interactive), ""),
+        )
+        .await?;
+    let (allowed, challenge, _): (bool, bool, HashMap<String, String>) = reply.body().deserialize()?;
+    Ok((allowed, challenge))
+}
+
+/// The caller's uid, once polkit says it may do every one of `actions`. One change of
+/// several kinds asks once: each is checked without asking (what polkit denies stays
+/// denied), and what still needs a password is asked for together, as `system.apply`.
+async fn authorize_all(conn: &Connection, header: &Header<'_>, actions: &[&str]) -> fdo::Result<u32> {
+    if let [one] = actions {
+        return authorize(conn, header, one).await;
+    }
+    let sender = header.sender().ok_or_else(|| fdo::Error::AccessDenied("no sender".into()))?.to_string();
+    let dbus = fdo::DBusProxy::new(conn).await?;
+    let uid = dbus.get_connection_unix_user(zbus::names::BusName::try_from(sender.as_str()).map_err(failed)?).await?;
+    let mut pending = Vec::new();
+    for a in actions {
+        match check(conn, &sender, a, false).await? {
+            (true, _) => {}
+            (false, true) => pending.push(*a),
+            (false, false) => {
+                audit(uid, a, "refused", "not authorized");
+                return Err(fdo::Error::AccessDenied("not authorized".into()));
+            }
+        }
+    }
+    if !pending.is_empty() && !check(conn, &sender, action::APPLY, true).await?.0 {
+        audit(uid, &pending.join(","), "refused", "not authorized");
+        return Err(fdo::Error::AccessDenied("not authorized".into()));
+    }
+    Ok(uid)
 }
 
 /// The caller's uid, once polkit says it may do `action` (asking the person if needed).
@@ -92,21 +140,7 @@ async fn authorize(conn: &Connection, header: &Header<'_>, action: &str) -> fdo:
     let sender = header.sender().ok_or_else(|| fdo::Error::AccessDenied("no sender".into()))?.to_string();
     let dbus = fdo::DBusProxy::new(conn).await?;
     let uid = dbus.get_connection_unix_user(zbus::names::BusName::try_from(sender.as_str()).map_err(failed)?).await?;
-    let mut subject: HashMap<&str, zbus::zvariant::Value> = HashMap::new();
-    subject.insert("name", zbus::zvariant::Value::from(sender.as_str()));
-    let details: HashMap<&str, &str> = HashMap::new();
-    // 1: the person may be asked.
-    let reply = conn
-        .call_method(
-            Some("org.freedesktop.PolicyKit1"),
-            "/org/freedesktop/PolicyKit1/Authority",
-            Some("org.freedesktop.PolicyKit1.Authority"),
-            "CheckAuthorization",
-            &(("system-bus-name", subject), action, details, 1u32, ""),
-        )
-        .await?;
-    let (allowed, _challenge, _): (bool, bool, HashMap<String, String>) = reply.body().deserialize()?;
-    if !allowed {
+    if !check(conn, &sender, action, true).await?.0 {
         audit(uid, action, "refused", "not authorized");
         return Err(fdo::Error::AccessDenied("not authorized".into()));
     }
@@ -164,10 +198,7 @@ impl Manager {
         let mut actions: Vec<&str> = changes.iter().map(Change::action).collect();
         actions.sort();
         actions.dedup();
-        let mut uid = 0;
-        for a in &actions {
-            uid = authorize(conn, &header, a).await?;
-        }
+        let uid = authorize_all(conn, &header, &actions).await?;
         let _guard = self.busy.try_lock().map_err(|_| failed("another system change is running"))?;
         let summary = serde_json::to_string(&changes).unwrap_or_default();
         let result = rebuild::apply(&self.config, &changes, &emitter).await;

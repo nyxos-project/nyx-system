@@ -24,6 +24,9 @@ pub mod action {
     /// Joining or leaving a group in [`GROUPS`](super::GROUPS): asked for every time,
     /// since some (docker) amount to root.
     pub const GROUPS: &str = "io.github.nyxos_project.system.groups";
+    /// One change of several kinds, asked for once: what of it still needs a password
+    /// after each kind's own action is checked.
+    pub const APPLY: &str = "io.github.nyxos_project.system.apply";
 }
 
 /// System services the manager may turn on or off, with what each is.
