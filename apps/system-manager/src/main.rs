@@ -10,6 +10,7 @@
 
 mod generations;
 mod rebuild;
+mod snapshots;
 
 use anyhow::{Context, Result};
 use nyx_system_proto::{BUS_NAME, Change, OBJECT_PATH, SystemSettings, action};

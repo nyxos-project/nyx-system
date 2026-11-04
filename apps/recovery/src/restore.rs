@@ -68,8 +68,13 @@ pub fn find(root: &Path, depth: u32) -> Vec<PathBuf> {
         return vec![];
     }
     let Ok(entries) = std::fs::read_dir(root) else { return vec![] };
-    let mut dirs: Vec<PathBuf> =
-        entries.flatten().filter(|e| e.file_type().is_ok_and(|t| t.is_dir())).map(|e| e.path()).collect();
+    // A drive that's the system's own root: not the store or the kernel's folders.
+    let skip = ["nix", "proc", "sys", "dev"];
+    let mut dirs: Vec<PathBuf> = entries
+        .flatten()
+        .filter(|e| e.file_type().is_ok_and(|t| t.is_dir()) && !skip.iter().any(|s| e.file_name() == *s))
+        .map(|e| e.path())
+        .collect();
     dirs.sort();
     dirs.iter().flat_map(|d| find(d, depth - 1)).collect()
 }
@@ -114,7 +119,8 @@ pub fn parse_drives(json: &str) -> Vec<Drive> {
                 label: b.label.clone().unwrap_or_default(),
                 fstype: fs.into(),
                 size: b.size.unwrap_or(0),
-                mounted: b.mountpoints.iter().flatten().next().cloned(),
+                // The drive itself, not the store's read-only bind mount of it.
+                mounted: b.mountpoints.iter().flatten().min_by_key(|m| m.len()).cloned(),
             });
         }
         for c in &b.children {
@@ -140,10 +146,10 @@ pub fn drives() -> Vec<Drive> {
 /// it's mounted already.
 pub fn mount(p: &Paths, source: &str, log: &Log) -> Result<PathBuf> {
     ensure!(source.starts_with("/dev/") || source.starts_with("UUID="), "choose a drive");
-    if let Ok(out) = quiet(&["findmnt", "--noheadings", "--first-only", "--output", "TARGET", "--source", source])
-        && !out.trim().is_empty()
+    if let Ok(out) = quiet(&["findmnt", "--noheadings", "--output", "TARGET", "--source", source])
+        && let Some(at) = out.lines().map(str::trim).filter(|l| !l.is_empty()).min_by_key(|l| l.len())
     {
-        return Ok(PathBuf::from(out.trim()));
+        return Ok(PathBuf::from(at));
     }
     let name: String =
         source.rsplit(['/', '=']).next().unwrap_or("drive").chars().filter(|c| c.is_ascii_alphanumeric() || *c == '-').collect();
@@ -216,7 +222,8 @@ pub fn restore(repo: &Path, password: &str, snap: &Snapshot, only: Option<&str>,
         args.extend(["--include", o]);
     }
     run(log, &args, Some(&format!("{password}\n")))?;
-    run(log, &["chown", "-R", &format!("{}:", person.uid), &t], None)?;
+    // `login:` is the person and their own group.
+    run(log, &["chown", "-R", &format!("{}:", person.login), &t], None)?;
     Ok(format!("Restored into {t}"))
 }
 
@@ -276,7 +283,7 @@ path = "/backups"
         let j = r#"{"blockdevices":[
           {"path":"/dev/sda","fstype":null,"label":null,"size":100,"mountpoints":[null],"children":[
             {"path":"/dev/sda1","fstype":"vfat","label":"ESP","size":10,"mountpoints":["/boot"]},
-            {"path":"/dev/sda2","fstype":"ext4","label":"nixos","size":90,"mountpoints":["/","/nix/store"]},
+            {"path":"/dev/sda2","fstype":"ext4","label":"nixos","size":90,"mountpoints":["/nix/store","/"]},
             {"path":"/dev/sda3","fstype":"swap","label":null,"size":5,"mountpoints":["[SWAP]"]}]},
           {"path":"/dev/sdb1","fstype":"exfat","label":"Black","size":500,"mountpoints":[null]}]}"#;
         let d = parse_drives(j);

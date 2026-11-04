@@ -51,13 +51,17 @@ pub fn list(p: &Paths, booted: &Path) -> Result<Vec<Generation>> {
             .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
             .map_or(0, |d| d.as_secs() as i64);
         let version = std::fs::read_to_string(entry.path().join("nixos-version")).unwrap_or_default().trim().to_string();
-        let here = target(&entry.path());
+        // Recovery itself is one of the generation's specialisations.
+        let mut here: Vec<PathBuf> = target(&entry.path()).into_iter().collect();
+        if let Ok(specs) = std::fs::read_dir(entry.path().join("specialisation")) {
+            here.extend(specs.flatten().filter_map(|s| target(&s.path())));
+        }
         out.push(Generation {
             number: n,
             created,
             version,
             default: Some(n) == default,
-            running: here.is_some() && here == running,
+            running: running.as_ref().is_some_and(|r| here.contains(r)),
             settings: settings_of(p, n).is_some(),
         });
     }
@@ -180,6 +184,21 @@ pub fn reset_settings(p: &Paths, log: &Log) -> Result<String> {
     rebuild_offline(p, log)
 }
 
+/// snapper's configurations (one per Btrfs filesystem it snapshots), and what each holds.
+pub fn snapshots() -> Vec<(String, String)> {
+    let Ok(dir) = std::fs::read_dir("/etc/snapper/configs") else { return vec![] };
+    let mut names: Vec<String> = dir.flatten().map(|e| e.file_name().to_string_lossy().into_owned()).collect();
+    names.sort();
+    names
+        .into_iter()
+        .map(|c| {
+            let list = crate::run::quiet(&["snapper", "-c", &c, "list", "--columns", "number,date,description"])
+                .unwrap_or_else(|e| format!("can't list them: {e:#}"));
+            (c, list)
+        })
+        .collect()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -225,6 +244,12 @@ mod tests {
         assert!(!list[0].settings);
         assert_eq!(list[1].version, "26.05.41");
         assert_eq!(previous(&list), Some(41));
+        // Booted into generation 40's recovery entry.
+        std::fs::create_dir_all(t.path().join("store/gen40-recovery")).unwrap();
+        std::fs::create_dir_all(t.path().join("store/gen40/specialisation")).unwrap();
+        symlink(t.path().join("store/gen40-recovery"), t.path().join("store/gen40/specialisation/recovery")).unwrap();
+        let list = super::list(&p, &t.path().join("store/gen40-recovery")).unwrap();
+        assert!(list[2].running && !list[1].running);
     }
 
     #[test]

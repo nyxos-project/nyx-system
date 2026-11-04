@@ -1,6 +1,6 @@
 //! Building and switching the system, and undoing a change that doesn't take.
 
-use crate::{Config, generations};
+use crate::{Config, generations, snapshots};
 use anyhow::{Context, Result, bail};
 use nyx_system_proto::Change;
 use std::path::Path;
@@ -95,7 +95,10 @@ pub async fn apply(config: &Config, changes: &[Change], emitter: &SignalEmitter<
     remember(config)?;
     let before = generations::current();
     config.write_settings(&new)?;
-    if let Err(e) = build_and_switch(config, emitter).await {
+    let pre = snapshots::before("a change to the system settings", emitter).await;
+    let result = build_and_switch(config, emitter).await;
+    snapshots::after(pre, "a change to the system settings", emitter).await;
+    if let Err(e) = result {
         config.write_settings(&old)?;
         // A switch that failed may have moved the profile already.
         if generations::current() != before {
@@ -113,11 +116,13 @@ pub async fn update(config: &Config, emitter: &SignalEmitter<'_>) -> Result<Stri
     remember(config)?;
     let before = generations::current();
     let flake = config.flake.display().to_string();
+    let pre = snapshots::before("an update", emitter).await;
     let result = async {
         run(emitter, &config.state, "nix", &["flake", "update", "--flake", &flake]).await?;
         build_and_switch(config, emitter).await
     }
     .await;
+    snapshots::after(pre, "an update", emitter).await;
     if let Err(e) = result {
         if let Some(bytes) = saved {
             std::fs::write(&lock, bytes)?;
@@ -135,7 +140,10 @@ pub async fn rollback(config: &Config, emitter: &SignalEmitter<'_>) -> Result<St
     let list = generations::list()?;
     let current = list.iter().find(|g| g.current).map(|g| g.number).context("no current generation")?;
     let previous = list.iter().filter(|g| g.number < current).map(|g| g.number).max().context("there's no earlier generation")?;
-    previous_generation(emitter, &config.state).await?;
+    let pre = snapshots::before("going back a generation", emitter).await;
+    let result = previous_generation(emitter, &config.state).await;
+    snapshots::after(pre, "going back a generation", emitter).await;
+    result?;
     // The settings that generation was built from, so the next change starts from them.
     let saved = config.state.join("generations").join(format!("{previous}.json"));
     if let Ok(text) = std::fs::read_to_string(saved) {

@@ -31,6 +31,7 @@ enum Act {
     Restore,
     MakeDefault(u32),
     ShowSettings,
+    Snapshots,
     Rebuild,
     ResetSettings,
     Errors,
@@ -184,6 +185,10 @@ impl App {
                     items.push(item(format!("Undo the last system change (back to generation {p})"), Act::MakeDefault(p)));
                 }
                 items.push(item("Show the system settings", Act::ShowSettings));
+                let snaps = system::snapshots();
+                if !snaps.is_empty() {
+                    items.push(item(format!("Btrfs snapshots ({} filesystems)", snaps.len()), Act::Snapshots));
+                }
                 items.push(item("Rebuild the system from its settings (offline)", Act::Rebuild));
                 items.push(item("Reset the system settings to the defaults, then rebuild", Act::ResetSettings));
                 list(
@@ -304,6 +309,15 @@ impl App {
             ),
             Act::ShowSettings => {
                 self.stack.push(Screen::Text { title: "System settings".into(), body: system::settings_now(&self.paths), scroll: 0 })
+            }
+            Act::Snapshots => {
+                let body = system::snapshots()
+                    .into_iter()
+                    .map(|(c, list)| format!("{c}\n{list}"))
+                    .collect::<Vec<_>>()
+                    .join("\n\n")
+                    + "\n\nA snapshot's files are in the filesystem's .snapshots/NUMBER/snapshot folder (like /home/.snapshots/12/snapshot); copy what you need from the root shell.";
+                self.stack.push(Screen::Text { title: "Btrfs snapshots".into(), body, scroll: 0 })
             }
             Act::Rebuild => self.confirm(
                 "Rebuild",
