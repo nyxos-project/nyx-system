@@ -1,0 +1,25 @@
+[package]
+name = "nyx-recovery"
+description = "NyxOS Recovery: generations, configuration repair, health, accounts and backup restore, offline, in a text console"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+
+[[bin]]
+name = "nyx-recovery"
+path = "src/main.rs"
+
+[dependencies]
+nyx-system-proto = { path = "../../crates/nyx-system-proto" }
+anyhow.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+toml.workspace = true
+ratatui = "0.29"
+crossterm = "0.28"
+libc = "0.2"
+
+[dev-dependencies]
+tempfile.workspace = true
