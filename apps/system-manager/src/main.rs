@@ -123,6 +123,19 @@ impl Manager {
     }
 }
 
+/// People's accounts (uid 1000 to 59999 in /etc/passwd), the only ones a group is given to.
+fn people() -> Vec<String> {
+    std::fs::read_to_string("/etc/passwd")
+        .unwrap_or_default()
+        .lines()
+        .filter_map(|l| {
+            let f: Vec<&str> = l.split(':').collect();
+            let uid: u32 = f.get(2)?.parse().ok()?;
+            (1000..60000).contains(&uid).then(|| f[0].to_string())
+        })
+        .collect()
+}
+
 #[zbus::interface(name = "io.github.nyxos_project.System1")]
 impl Manager {
     async fn settings(&self) -> fdo::Result<String> {
@@ -142,6 +155,11 @@ impl Manager {
         let changes: Vec<Change> = serde_json::from_str(changes).map_err(|e| fdo::Error::InvalidArgs(e.to_string()))?;
         for c in &changes {
             c.validate().map_err(|e| fdo::Error::InvalidArgs(e.to_string()))?;
+            if let Change::GroupMember { user, member: true, .. } = c
+                && !people().contains(user)
+            {
+                return Err(fdo::Error::InvalidArgs(format!("{user} isn't a person's account on this computer")));
+            }
         }
         let mut actions: Vec<&str> = changes.iter().map(Change::action).collect();
         actions.sort();

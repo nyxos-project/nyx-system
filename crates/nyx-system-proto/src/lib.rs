@@ -21,6 +21,9 @@ pub mod action {
     pub const DEFAULTS: &str = "io.github.nyxos_project.system.defaults";
     pub const UPDATE: &str = "io.github.nyxos_project.system.update";
     pub const ROLLBACK: &str = "io.github.nyxos_project.system.rollback";
+    /// Joining or leaving a group in [`GROUPS`](super::GROUPS): asked for every time,
+    /// since some (docker) amount to root.
+    pub const GROUPS: &str = "io.github.nyxos_project.system.groups";
 }
 
 /// System services the manager may turn on or off, with what each is.
@@ -33,6 +36,19 @@ pub const SERVICES: &[(&str, &str)] = &[
     ("tailscale", "Tailscale"),
     ("fwupd", "Firmware updates (fwupd)"),
     ("avahi", "Local network discovery (Avahi)"),
+    ("podman", "Podman containers"),
+    ("incus", "Incus containers and virtual machines"),
+    ("libvirtd", "Virtual machines (libvirt)"),
+    ("ollama", "Ollama, local AI models"),
+];
+
+/// Groups the manager may add users to, with what membership allows.
+pub const GROUPS: &[(&str, &str)] = &[
+    ("docker", "Run Docker containers (as good as root on this computer)"),
+    ("libvirtd", "Manage system virtual machines"),
+    ("incus-admin", "Manage Incus containers and virtual machines"),
+    ("kvm", "Use hardware virtualization directly"),
+    ("dialout", "Use serial ports"),
 ];
 
 /// The system layer's settings. Absent values leave the distribution's.
@@ -52,6 +68,15 @@ pub struct SystemSettings {
     /// nixpkgs attributes installed for everyone.
     #[serde(default, skip_serializing_if = "BTreeSet::is_empty")]
     pub packages: BTreeSet<String>,
+    /// Those of `packages` with an unfree license the administrator accepted.
+    #[serde(default, skip_serializing_if = "BTreeSet::is_empty")]
+    pub unfree: BTreeSet<String>,
+    /// Nyx apps (`nyx.<name>.enable`) turned on or off.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub nyx_apps: BTreeMap<String, bool>,
+    /// [`GROUPS`] and the users added to each.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub groups: BTreeMap<String, BTreeSet<String>>,
     /// [`SERVICES`] the administrator turned on or off.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub services: BTreeMap<String, bool>,
@@ -72,6 +97,9 @@ impl Default for SystemSettings {
             locale: None,
             keyboard_layout: None,
             packages: BTreeSet::new(),
+            unfree: BTreeSet::new(),
+            nyx_apps: BTreeMap::new(),
+            groups: BTreeMap::new(),
             services: BTreeMap::new(),
             theme: Themes::default(),
         }
@@ -100,24 +128,58 @@ impl Themes {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "change", rename_all = "kebab-case", deny_unknown_fields)]
 pub enum Change {
-    Hostname { value: Option<String> },
-    TimeZone { value: Option<String> },
-    Locale { value: Option<String> },
-    KeyboardLayout { value: Option<String> },
-    SystemTheme { value: Option<String> },
-    BootTheme { value: Option<String> },
-    LoginTheme { value: Option<String> },
-    AddPackages { packages: Vec<String> },
-    RemovePackages { packages: Vec<String> },
-    Service { name: String, enabled: Option<bool> },
+    Hostname {
+        value: Option<String>,
+    },
+    TimeZone {
+        value: Option<String>,
+    },
+    Locale {
+        value: Option<String>,
+    },
+    KeyboardLayout {
+        value: Option<String>,
+    },
+    SystemTheme {
+        value: Option<String>,
+    },
+    BootTheme {
+        value: Option<String>,
+    },
+    LoginTheme {
+        value: Option<String>,
+    },
+    /// `unfree` names those of `packages` whose license the administrator accepted.
+    AddPackages {
+        packages: Vec<String>,
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        unfree: Vec<String>,
+    },
+    RemovePackages {
+        packages: Vec<String>,
+    },
+    Service {
+        name: String,
+        enabled: Option<bool>,
+    },
+    NyxApp {
+        name: String,
+        enabled: Option<bool>,
+    },
+    GroupMember {
+        group: String,
+        user: String,
+        member: bool,
+    },
 }
 
 impl Change {
     /// The polkit action that authorizes it.
     pub fn action(&self) -> &'static str {
         match self {
-            Change::AddPackages { .. } | Change::RemovePackages { .. } => action::PACKAGES,
+            Change::AddPackages { .. } | Change::RemovePackages { .. } | Change::NyxApp { .. } => action::PACKAGES,
             Change::Service { .. } => action::SERVICES,
+            Change::GroupMember { .. } => action::GROUPS,
             _ => action::SETTINGS,
         }
     }
@@ -137,15 +199,25 @@ impl Change {
             Change::SystemTheme { value } | Change::BootTheme { value } | Change::LoginTheme { value } => {
                 opt(value, valid_theme, "theme")
             }
-            Change::AddPackages { packages } | Change::RemovePackages { packages } => {
-                ensure!(!packages.is_empty() && packages.len() <= 100, "give between 1 and 100 packages");
-                for p in packages {
-                    ensure!(valid_package(p), "not a valid nixpkgs attribute: {p}");
+            Change::AddPackages { packages, unfree } => {
+                valid_packages(packages)?;
+                for u in unfree {
+                    ensure!(packages.contains(u), "{u} is marked unfree but isn't one of the packages");
                 }
                 Ok(())
             }
+            Change::RemovePackages { packages } => valid_packages(packages),
             Change::Service { name, .. } => {
                 ensure!(SERVICES.iter().any(|(n, _)| n == name), "not a service NyxOS manages here: {name}");
+                Ok(())
+            }
+            Change::NyxApp { name, .. } => {
+                ensure!(valid_nyx_app(name), "not a valid Nyx app name: {name}");
+                Ok(())
+            }
+            Change::GroupMember { group, user, .. } => {
+                ensure!(GROUPS.iter().any(|(g, _)| g == group), "not a group NyxOS manages here: {group}");
+                ensure!(valid_user(user), "not a valid user name: {user}");
                 Ok(())
             }
         }
@@ -166,10 +238,31 @@ impl SystemSettings {
                 Change::SystemTheme { value } => s.theme.system = value.clone(),
                 Change::BootTheme { value } => s.theme.boot = value.clone(),
                 Change::LoginTheme { value } => s.theme.login = value.clone(),
-                Change::AddPackages { packages } => s.packages.extend(packages.iter().cloned()),
+                Change::AddPackages { packages, unfree } => {
+                    s.packages.extend(packages.iter().cloned());
+                    s.unfree.extend(unfree.iter().cloned());
+                }
                 Change::RemovePackages { packages } => {
                     for p in packages {
                         s.packages.remove(p);
+                        s.unfree.remove(p);
+                    }
+                }
+                Change::NyxApp { name, enabled: Some(on) } => {
+                    s.nyx_apps.insert(name.clone(), *on);
+                }
+                Change::NyxApp { name, enabled: None } => {
+                    s.nyx_apps.remove(name);
+                }
+                Change::GroupMember { group, user, member } => {
+                    let users = s.groups.entry(group.clone()).or_default();
+                    if *member {
+                        users.insert(user.clone());
+                    } else {
+                        users.remove(user);
+                    }
+                    if users.is_empty() {
+                        s.groups.remove(group);
                     }
                 }
                 Change::Service { name, enabled: Some(on) } => {
@@ -238,6 +331,28 @@ pub fn valid_package(p: &str) -> bool {
         })
 }
 
+fn valid_packages(packages: &[String]) -> Result<()> {
+    ensure!(!packages.is_empty() && packages.len() <= 100, "give between 1 and 100 packages");
+    for p in packages {
+        ensure!(valid_package(p), "not a valid nixpkgs attribute: {p}");
+    }
+    Ok(())
+}
+
+/// A Nyx app as its NixOS option names it (`media-player` for `nyx.media-player`).
+pub fn valid_nyx_app(n: &str) -> bool {
+    (1..=40).contains(&n.len())
+        && n.bytes().all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-')
+        && !n.starts_with('-')
+}
+
+/// A login name as useradd takes it.
+pub fn valid_user(u: &str) -> bool {
+    (1..=32).contains(&u.len())
+        && u.bytes().all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b"_-".contains(&b))
+        && u.starts_with(|c: char| c.is_ascii_lowercase() || c == '_')
+}
+
 /// One system generation.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Generation {
@@ -284,16 +399,29 @@ mod tests {
         let s = SystemSettings::default()
             .with(&[
                 Change::Hostname { value: Some("nyx-laptop".into()) },
-                Change::AddPackages { packages: vec!["gimp".into(), "kdePackages.kdenlive".into()] },
+                Change::AddPackages {
+                    packages: vec!["gimp".into(), "kdePackages.kdenlive".into(), "vscode".into()],
+                    unfree: vec!["vscode".into()],
+                },
+                Change::NyxApp { name: "mail".into(), enabled: Some(true) },
+                Change::GroupMember { group: "docker".into(), user: "ken".into(), member: true },
                 Change::Service { name: "printing".into(), enabled: Some(true) },
                 Change::BootTheme { value: Some("nyx-dark".into()) },
             ])
             .unwrap();
         assert_eq!(s.hostname.as_deref(), Some("nyx-laptop"));
-        assert_eq!(s.packages.len(), 2);
+        assert_eq!(s.packages.len(), 3);
+        assert!(s.unfree.contains("vscode") && s.nyx_apps.get("mail") == Some(&true));
+        assert!(s.groups["docker"].contains("ken"));
         assert_eq!(s.services.get("printing"), Some(&true));
-        let back = s.with(&[Change::RemovePackages { packages: vec!["gimp".into()] }, Change::Hostname { value: None }]).unwrap();
-        assert!(back.hostname.is_none() && back.packages.len() == 1);
+        let back = s
+            .with(&[
+                Change::RemovePackages { packages: vec!["gimp".into(), "vscode".into()] },
+                Change::Hostname { value: None },
+                Change::GroupMember { group: "docker".into(), user: "ken".into(), member: false },
+            ])
+            .unwrap();
+        assert!(back.hostname.is_none() && back.packages.len() == 1 && back.unfree.is_empty() && back.groups.is_empty());
         let json = serde_json::to_string(&back).unwrap();
         assert_eq!(SystemSettings::parse(&json).unwrap(), back);
     }
@@ -305,8 +433,12 @@ mod tests {
             Change::TimeZone { value: Some("../../etc/shadow".into()) },
             Change::Locale { value: Some("en_US".into()) },
             Change::KeyboardLayout { value: Some("us;rm".into()) },
-            Change::AddPackages { packages: vec!["gimp; rm -rf /".into()] },
-            Change::AddPackages { packages: vec![".hidden".into()] },
+            Change::AddPackages { packages: vec!["gimp; rm -rf /".into()], unfree: vec![] },
+            Change::AddPackages { packages: vec![".hidden".into()], unfree: vec![] },
+            Change::AddPackages { packages: vec!["gimp".into()], unfree: vec!["vscode".into()] },
+            Change::NyxApp { name: "../mail".into(), enabled: Some(true) },
+            Change::GroupMember { group: "wheel".into(), user: "ken".into(), member: true },
+            Change::GroupMember { group: "docker".into(), user: "Ken;".into(), member: true },
             Change::Service { name: "sshd-root".into(), enabled: Some(true) },
         ] {
             assert!(bad.validate().is_err(), "{bad:?}");

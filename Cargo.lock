@@ -674,6 +674,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "nyx-catalog"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "nyx-system-proto",
+ "serde",
+ "toml",
+]
+
+[[package]]
 name = "nyx-config"
 version = "0.1.0"
 dependencies = [
@@ -700,6 +710,7 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "futures-util",
+ "nyx-catalog",
  "nyx-config",
  "nyx-system-proto",
  "serde_json",

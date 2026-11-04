@@ -13,6 +13,7 @@ path = "src/main.rs"
 
 [dependencies]
 nyx-config = { path = "../../crates/nyx-config" }
+nyx-catalog = { path = "../../crates/nyx-catalog" }
 nyx-system-proto = { path = "../../crates/nyx-system-proto", features = ["client"] }
 anyhow.workspace = true
 serde_json.workspace = true

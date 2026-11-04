@@ -10,6 +10,7 @@ theme service.
 | `nyx-system` | Its command line, and the configuration layers' |
 | `nyx-config` | The configuration layers as a library |
 | `nyx-system-proto` | The settings, changes and D-Bus interface, for clients |
+| `nyx-catalog` | The software catalog (`data/catalog.toml`), and the changes that install from it |
 | `nyx-themed` | User service: the chosen Nyx theme on Hyprland, Foot, GTK and the wallpaper, live |
 
 ## Configuration layers
@@ -22,7 +23,8 @@ Later layers win key by key. Updates replace only the first layer.
 
 Ordinary desktop preferences are user settings and change live. System settings
 (`/etc/nyxos/overrides/system.json`: host name, time zone, locale, keyboard, system
-packages, the services NyxOS manages, the system, boot and login themes) are read by the
+packages and the unfree licenses accepted for them, Nyx apps, the services and groups
+NyxOS manages, the system, boot and login themes) are read by the
 NyxOS flake as its `nyxos-overrides` input. The manager builds a change before switching
 to it, and puts the previous settings back if the build or the switch fails. It keeps
 the settings each generation was built from, so a rollback brings them back too.
@@ -30,21 +32,44 @@ the settings each generation was built from, so a rollback brings them back too.
 ## The System Manager
 
 Each method checks its caller with polkit, one action per kind of change
-(`io.github.nyxos_project.system.{settings,packages,services,defaults,update,rollback}`),
-and writes an audit line to the journal. Clients send typed changes
+(`io.github.nyxos_project.system.{settings,packages,services,groups,defaults,update,rollback}`),
+and writes an audit line to the journal. Joining a group asks for an administrator every
+time, since some (docker) are as good as root; only people's accounts are added. Clients send typed changes
 (`nyx_system_proto::Change`), never commands. One change runs at a time.
 
 ```sh
 nyx-system settings
 nyx-system set time-zone America/Chicago
 nyx-system install gimp
+nyx-system install --accept-unfree vscode
 nyx-system service printing on
+nyx-system app mail on                         # a Nyx app
+nyx-system group add docker ken
 nyx-system update
 nyx-system generations
 nyx-system rollback
 nyx-system default set appearance theme nord   # every new user's theme
 nyx-system config show appearance              # merged, with each value's layer
 ```
+
+## Software catalog
+
+`data/catalog.toml` is what Nyx Welcome, Nyx Store and `nyx-system catalog` offer, in
+sections (Welcome's steps) and categories, with four presets (Everyday, Developer, AI
+Developer, Homelab) that are starting selections. Items are in three tiers: base
+(preinstalled), welcome and store. Each says what it installs (nixpkgs packages for
+everyone, Nyx apps, a Flathub app for the user, services) and what it needs (groups, an
+unfree license). A selection becomes one rebuild through the System Manager plus the
+Flathub installs, after the user agrees to what needs agreeing to:
+
+```sh
+nyx-system catalog                             # * marks what's installed
+nyx-system catalog install --preset developer docker
+nyx-system catalog remove docker
+```
+
+NyxOS installs it at `/run/current-system/sw/share/nyx/catalog.toml`, and its flake
+checks it against nixpkgs and its own configuration.
 
 ## Themes
 

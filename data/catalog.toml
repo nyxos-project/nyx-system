@@ -1,0 +1,1147 @@
+# The NyxOS software catalog, shared by Nyx Welcome, Nyx Store and `nyx-system catalog`.
+#
+# tier: "base" is preinstalled, "welcome" is offered in Welcome (and the Store), "store"
+# only in the Store. An item installs any of: nixpkgs `packages` (for everyone, through
+# the System Manager), `nyx` apps (nyx.<name>.enable), a Flathub `flatpak` (for the
+# user), and turns on `services`. `groups` are joined by the user who asks, only after
+# they agree; `unfree` items need their license accepted. `bin` is a command that shows
+# the item is already installed, however it got there.
+
+[[section]]
+id = "nyx-apps"
+name = "Nyx apps"
+summary = "Mail, calendar, notes and the rest of the Nyx suite."
+
+[[section]]
+id = "desktop"
+name = "Apps"
+summary = "Browsers, office, creative tools, games and chat."
+
+[[section]]
+id = "cli"
+name = "Command-line tools"
+summary = "Terminal tools and text-mode apps."
+
+[[section]]
+id = "toolchains"
+name = "Development"
+summary = "Languages and build tools. Projects can also bring their own with Nix shells."
+
+[[section]]
+id = "infrastructure"
+name = "Containers and infrastructure"
+summary = "Containers, virtual machines, networking, sync and cloud tools."
+
+[[section]]
+id = "agents"
+name = "AI agents"
+summary = "Coding agents and local models. Installing one doesn't give it access to Nyx Assistant or to system changes."
+
+# ----- Categories -----
+
+[[category]]
+id = "nyx-communication"
+name = "Communication"
+section = "nyx-apps"
+
+[[category]]
+id = "nyx-productivity"
+name = "Productivity"
+section = "nyx-apps"
+
+[[category]]
+id = "nyx-media"
+name = "Media"
+section = "nyx-apps"
+
+[[category]]
+id = "nyx-tools"
+name = "Tools"
+section = "nyx-apps"
+
+[[category]]
+id = "nyx-essentials"
+name = "Essentials"
+section = "nyx-apps"
+
+[[category]]
+id = "browsers"
+name = "Web browsers"
+section = "desktop"
+
+[[category]]
+id = "office"
+name = "Office"
+section = "desktop"
+
+[[category]]
+id = "editors"
+name = "Code editors"
+section = "desktop"
+
+[[category]]
+id = "graphics"
+name = "Graphics"
+section = "desktop"
+
+[[category]]
+id = "video"
+name = "Video"
+section = "desktop"
+
+[[category]]
+id = "audio"
+name = "Audio"
+section = "desktop"
+
+[[category]]
+id = "games"
+name = "Games"
+section = "desktop"
+
+[[category]]
+id = "chat"
+name = "Chat"
+section = "desktop"
+
+[[category]]
+id = "remote"
+name = "Remote desktop and virtual machines"
+section = "desktop"
+
+[[category]]
+id = "cli-base"
+name = "Essentials"
+section = "cli"
+
+[[category]]
+id = "cli-tools"
+name = "Tools"
+section = "cli"
+
+[[category]]
+id = "languages"
+name = "Languages"
+section = "toolchains"
+
+[[category]]
+id = "build"
+name = "Build tools"
+section = "toolchains"
+
+[[category]]
+id = "containers"
+name = "Containers"
+section = "infrastructure"
+
+[[category]]
+id = "virtualization"
+name = "Virtual machines"
+section = "infrastructure"
+
+[[category]]
+id = "network"
+name = "Networking and remote access"
+section = "infrastructure"
+
+[[category]]
+id = "sync"
+name = "Sync and backup"
+section = "infrastructure"
+
+[[category]]
+id = "cloud"
+name = "Automation and cloud"
+section = "infrastructure"
+
+[[category]]
+id = "coding-agents"
+name = "Coding agents"
+section = "agents"
+
+[[category]]
+id = "local-models"
+name = "Local models"
+section = "agents"
+
+# ----- Nyx apps -----
+
+[[item]]
+id = "nyx-settings"
+name = "Nyx Settings"
+summary = "Every setting for this computer."
+category = "nyx-essentials"
+tier = "base"
+nyx = ["settings"]
+
+[[item]]
+id = "nyx-store"
+name = "Nyx Store"
+summary = "Find and install apps from nixpkgs and Flathub."
+category = "nyx-essentials"
+tier = "base"
+nyx = ["store"]
+
+[[item]]
+id = "nyx-files"
+name = "Nyx Files"
+summary = "Browse, search and organize files."
+category = "nyx-essentials"
+tier = "base"
+nyx = ["files"]
+
+[[item]]
+id = "nyx-glimpse"
+name = "Nyx Glimpse"
+summary = "The launcher and local search."
+category = "nyx-essentials"
+tier = "base"
+nyx = ["glimpse"]
+
+[[item]]
+id = "nyx-capture"
+name = "Nyx Capture"
+summary = "Screenshots, screen recording, text and colour picking."
+category = "nyx-essentials"
+tier = "base"
+nyx = ["capture"]
+
+[[item]]
+id = "nyx-notepad"
+name = "Nyx Notepad"
+summary = "A plain text editor."
+category = "nyx-essentials"
+tier = "base"
+nyx = ["notepad"]
+
+[[item]]
+id = "nyx-calculator"
+name = "Nyx Calculator"
+summary = "A calculator."
+category = "nyx-essentials"
+tier = "base"
+nyx = ["calculator"]
+
+[[item]]
+id = "nyx-archive"
+name = "Nyx Archive"
+summary = "Open and make zip, tar and 7z archives."
+category = "nyx-essentials"
+tier = "base"
+nyx = ["archive"]
+
+[[item]]
+id = "nyx-photos"
+name = "Nyx Photos"
+summary = "Your photo library and the image viewer."
+category = "nyx-essentials"
+tier = "base"
+nyx = ["photos"]
+
+[[item]]
+id = "nyx-activity"
+name = "Nyx Activity"
+summary = "What the computer is doing: processes, resources and services."
+category = "nyx-essentials"
+tier = "base"
+nyx = ["activity"]
+
+[[item]]
+id = "nyx-backup"
+name = "Nyx Backup"
+summary = "Back up your files on a schedule."
+category = "nyx-essentials"
+tier = "base"
+nyx = ["backup"]
+
+[[item]]
+id = "nyx-share"
+name = "Nyx Share"
+summary = "Share files and links with apps and nearby devices."
+category = "nyx-essentials"
+tier = "base"
+nyx = ["share"]
+
+[[item]]
+id = "nyx-mail"
+name = "Nyx Mail"
+summary = "Email, with your online accounts."
+category = "nyx-communication"
+tier = "welcome"
+nyx = ["mail"]
+
+[[item]]
+id = "nyx-calendar"
+name = "Nyx Calendar"
+summary = "Calendars, synced with your online accounts."
+category = "nyx-productivity"
+tier = "welcome"
+nyx = ["calendar"]
+
+[[item]]
+id = "nyx-contacts"
+name = "Nyx Contacts"
+summary = "Your address book."
+category = "nyx-communication"
+tier = "welcome"
+nyx = ["contacts"]
+
+[[item]]
+id = "nyx-notes"
+name = "Nyx Notes"
+summary = "Notes and notebooks."
+category = "nyx-productivity"
+tier = "welcome"
+nyx = ["notes"]
+
+[[item]]
+id = "nyx-office"
+name = "Nyx Office"
+summary = "Write, Sheets and Present."
+category = "nyx-productivity"
+tier = "welcome"
+nyx = ["office"]
+
+[[item]]
+id = "nyx-pdf"
+name = "Nyx PDF"
+summary = "Read, annotate and sign PDFs."
+category = "nyx-productivity"
+tier = "welcome"
+nyx = ["pdf"]
+
+[[item]]
+id = "nyx-news"
+name = "Nyx News"
+summary = "News feeds."
+category = "nyx-media"
+tier = "welcome"
+nyx = ["news"]
+
+[[item]]
+id = "nyx-music"
+name = "Nyx Music"
+summary = "Your music library."
+category = "nyx-media"
+tier = "welcome"
+nyx = ["music"]
+
+[[item]]
+id = "nyx-media-player"
+name = "Nyx Media Player"
+summary = "Play videos and music files."
+category = "nyx-media"
+tier = "welcome"
+nyx = ["media-player"]
+
+[[item]]
+id = "nyx-theater"
+name = "Nyx Theater"
+summary = "Movies and shows from your media servers."
+category = "nyx-media"
+tier = "welcome"
+nyx = ["theater"]
+
+[[item]]
+id = "nyx-home"
+name = "Nyx Home"
+summary = "Smart home devices and automations."
+category = "nyx-tools"
+tier = "welcome"
+nyx = ["home"]
+
+[[item]]
+id = "nyx-containers"
+name = "Nyx Containers"
+summary = "Manage Podman and Docker containers."
+category = "nyx-tools"
+tier = "welcome"
+nyx = ["containers"]
+note = "Works with Podman or Docker; add one under Containers and infrastructure."
+
+[[item]]
+id = "nyx-git"
+name = "Nyx Git"
+summary = "Git repositories, changes and history."
+category = "nyx-tools"
+tier = "welcome"
+nyx = ["git"]
+
+[[item]]
+id = "nyx-passwords"
+name = "Nyx Passwords"
+summary = "A password vault, with autofill."
+category = "nyx-productivity"
+tier = "welcome"
+nyx = ["passwords"]
+
+[[item]]
+id = "nyx-torrents"
+name = "Nyx Torrents"
+summary = "Download torrents."
+category = "nyx-tools"
+tier = "welcome"
+nyx = ["torrents"]
+
+[[item]]
+id = "nyx-pulse"
+name = "Nyx Pulse"
+summary = "Telegram, with calls."
+category = "nyx-communication"
+tier = "welcome"
+nyx = ["pulse"]
+
+[[item]]
+id = "nyx-assistant"
+name = "Nyx Assistant"
+summary = "A local assistant you can talk to, with its HUD and Canvas."
+category = "nyx-tools"
+tier = "welcome"
+nyx = ["assistant"]
+note = "Downloads its speech and language models the first time you set it up."
+
+[[item]]
+id = "nyx-chat"
+name = "Nyx Chat"
+summary = "Chat with AI models, local or online."
+category = "nyx-communication"
+tier = "welcome"
+nyx = ["chat"]
+
+[[item]]
+id = "nyx-weather"
+name = "Nyx Weather"
+summary = "Forecasts and radar."
+category = "nyx-tools"
+tier = "store"
+nyx = ["weather"]
+
+[[item]]
+id = "nyx-maps"
+name = "Nyx Maps"
+summary = "Maps and directions."
+category = "nyx-tools"
+tier = "store"
+nyx = ["maps"]
+
+[[item]]
+id = "nyx-reminders"
+name = "Nyx Reminders"
+summary = "Reminders and to-do lists, synced."
+category = "nyx-productivity"
+tier = "store"
+nyx = ["reminders"]
+
+[[item]]
+id = "nyx-clipboard"
+name = "Nyx Clipboard"
+summary = "Clipboard history."
+category = "nyx-tools"
+tier = "store"
+nyx = ["clipboard"]
+
+[[item]]
+id = "nyx-transfer"
+name = "Nyx Transfer"
+summary = "Send files between your devices."
+category = "nyx-tools"
+tier = "store"
+nyx = ["transfer"]
+
+[[item]]
+id = "nyx-cloud"
+name = "Nyx Cloud"
+summary = "Your cloud storage in Files."
+category = "nyx-tools"
+tier = "store"
+nyx = ["cloud"]
+
+# ----- Apps -----
+
+[[item]]
+id = "firefox"
+name = "Firefox"
+summary = "Mozilla's web browser."
+category = "browsers"
+tier = "welcome"
+packages = ["firefox"]
+bin = "firefox"
+
+[[item]]
+id = "chromium"
+name = "Chromium"
+summary = "The open-source browser Chrome is built on."
+category = "browsers"
+tier = "welcome"
+packages = ["chromium"]
+bin = "chromium"
+
+[[item]]
+id = "brave"
+name = "Brave"
+summary = "A Chromium browser that blocks ads and trackers."
+category = "browsers"
+tier = "welcome"
+packages = ["brave"]
+bin = "brave"
+
+[[item]]
+id = "vivaldi"
+name = "Vivaldi"
+summary = "A Chromium browser with tabs, panels and mail built in."
+category = "browsers"
+tier = "welcome"
+packages = ["vivaldi"]
+unfree = true
+bin = "vivaldi"
+
+[[item]]
+id = "libreoffice"
+name = "LibreOffice"
+summary = "Writer, Calc, Impress and more, with Microsoft Office files."
+category = "office"
+tier = "welcome"
+packages = ["libreoffice-fresh"]
+bin = "libreoffice"
+
+[[item]]
+id = "onlyoffice"
+name = "ONLYOFFICE"
+summary = "Documents, spreadsheets and slides that look like Microsoft Office."
+category = "office"
+tier = "welcome"
+packages = ["onlyoffice-desktopeditors"]
+bin = "onlyoffice-desktopeditors"
+
+[[item]]
+id = "vscode"
+name = "Visual Studio Code"
+summary = "Microsoft's code editor."
+category = "editors"
+tier = "welcome"
+packages = ["vscode"]
+unfree = true
+bin = "code"
+
+[[item]]
+id = "vscodium"
+name = "VSCodium"
+summary = "Visual Studio Code without Microsoft's branding and telemetry."
+category = "editors"
+tier = "welcome"
+packages = ["vscodium"]
+bin = "codium"
+
+[[item]]
+id = "zed"
+name = "Zed"
+summary = "A fast code editor, with collaboration and AI."
+category = "editors"
+tier = "welcome"
+packages = ["zed-editor"]
+bin = "zeditor"
+
+[[item]]
+id = "gimp"
+name = "GIMP"
+summary = "Photo editing and image manipulation."
+category = "graphics"
+tier = "welcome"
+packages = ["gimp"]
+bin = "gimp"
+
+[[item]]
+id = "krita"
+name = "Krita"
+summary = "Digital painting."
+category = "graphics"
+tier = "welcome"
+packages = ["krita"]
+bin = "krita"
+
+[[item]]
+id = "inkscape"
+name = "Inkscape"
+summary = "Vector graphics."
+category = "graphics"
+tier = "welcome"
+packages = ["inkscape"]
+bin = "inkscape"
+
+[[item]]
+id = "kdenlive"
+name = "Kdenlive"
+summary = "Video editing."
+category = "video"
+tier = "welcome"
+packages = ["kdePackages.kdenlive"]
+bin = "kdenlive"
+
+[[item]]
+id = "shotcut"
+name = "Shotcut"
+summary = "Simple video editing."
+category = "video"
+tier = "welcome"
+packages = ["shotcut"]
+bin = "shotcut"
+
+[[item]]
+id = "audacity"
+name = "Audacity"
+summary = "Record and edit audio."
+category = "audio"
+tier = "welcome"
+packages = ["audacity"]
+bin = "audacity"
+
+[[item]]
+id = "ardour"
+name = "Ardour"
+summary = "A digital audio workstation."
+category = "audio"
+tier = "welcome"
+packages = ["ardour"]
+bin = "ardour9"
+
+[[item]]
+id = "steam"
+name = "Steam"
+summary = "Valve's game store and launcher."
+category = "games"
+tier = "welcome"
+flatpak = "com.valvesoftware.Steam"
+unfree = true
+note = "From Flathub, which brings the 32-bit libraries Steam's games need."
+
+[[item]]
+id = "heroic"
+name = "Heroic"
+summary = "Games from Epic, GOG and Amazon."
+category = "games"
+tier = "welcome"
+packages = ["heroic"]
+bin = "heroic"
+
+[[item]]
+id = "lutris"
+name = "Lutris"
+summary = "One library for games from everywhere."
+category = "games"
+tier = "welcome"
+packages = ["lutris"]
+bin = "lutris"
+
+[[item]]
+id = "discord"
+name = "Discord"
+summary = "Voice, video and text chat for communities."
+category = "chat"
+tier = "welcome"
+packages = ["discord"]
+unfree = true
+bin = "discord"
+
+[[item]]
+id = "signal"
+name = "Signal"
+summary = "Private messaging."
+category = "chat"
+tier = "welcome"
+packages = ["signal-desktop"]
+bin = "signal-desktop"
+
+[[item]]
+id = "telegram"
+name = "Telegram"
+summary = "Telegram's own app."
+category = "chat"
+tier = "welcome"
+packages = ["telegram-desktop"]
+bin = "Telegram"
+
+[[item]]
+id = "gnome-boxes"
+name = "GNOME Boxes"
+summary = "Simple virtual machines."
+category = "remote"
+tier = "welcome"
+packages = ["gnome-boxes"]
+services = ["libvirtd"]
+bin = "gnome-boxes"
+
+[[item]]
+id = "remmina"
+name = "Remmina"
+summary = "Remote desktop with RDP, VNC and SSH."
+category = "remote"
+tier = "welcome"
+packages = ["remmina"]
+bin = "remmina"
+
+[[item]]
+id = "rustdesk"
+name = "RustDesk"
+summary = "Remote desktop and support, self-hostable."
+category = "remote"
+tier = "welcome"
+packages = ["rustdesk-flutter"]
+bin = "rustdesk"
+
+# ----- Command-line tools -----
+
+[[item]]
+id = "git"
+name = "Git"
+summary = "Version control."
+category = "cli-base"
+tier = "base"
+packages = ["git"]
+bin = "git"
+
+[[item]]
+id = "curl"
+name = "curl and wget"
+summary = "Download from the web."
+category = "cli-base"
+tier = "base"
+packages = ["curl", "wget"]
+bin = "curl"
+
+[[item]]
+id = "search-tools"
+name = "ripgrep, fd, bat and eza"
+summary = "Faster grep, find, cat and ls."
+category = "cli-base"
+tier = "base"
+packages = ["ripgrep", "fd", "bat", "eza"]
+bin = "rg"
+
+[[item]]
+id = "jq"
+name = "jq"
+summary = "Read and reshape JSON."
+category = "cli-base"
+tier = "base"
+packages = ["jq"]
+bin = "jq"
+
+[[item]]
+id = "btop"
+name = "btop"
+summary = "Processes and resources in the terminal."
+category = "cli-base"
+tier = "base"
+packages = ["btop"]
+bin = "btop"
+
+[[item]]
+id = "rsync"
+name = "rsync"
+summary = "Copy and sync files, locally or over SSH."
+category = "cli-base"
+tier = "base"
+packages = ["rsync"]
+bin = "rsync"
+
+[[item]]
+id = "gh"
+name = "GitHub CLI"
+summary = "Pull requests, issues and releases from the terminal."
+category = "cli-tools"
+tier = "welcome"
+packages = ["gh"]
+bin = "gh"
+
+[[item]]
+id = "lazygit"
+name = "lazygit"
+summary = "A terminal interface for Git."
+category = "cli-tools"
+tier = "welcome"
+packages = ["lazygit"]
+bin = "lazygit"
+
+[[item]]
+id = "yazi"
+name = "Yazi"
+summary = "A terminal file manager."
+category = "cli-tools"
+tier = "welcome"
+packages = ["yazi"]
+bin = "yazi"
+
+[[item]]
+id = "lazydocker"
+name = "lazydocker"
+summary = "A terminal interface for Docker."
+category = "cli-tools"
+tier = "welcome"
+packages = ["lazydocker"]
+bin = "lazydocker"
+
+[[item]]
+id = "tmux"
+name = "tmux"
+summary = "A terminal multiplexer."
+category = "cli-tools"
+tier = "welcome"
+packages = ["tmux"]
+bin = "tmux"
+
+[[item]]
+id = "zellij"
+name = "Zellij"
+summary = "A terminal workspace with panes and layouts."
+category = "cli-tools"
+tier = "welcome"
+packages = ["zellij"]
+bin = "zellij"
+
+[[item]]
+id = "neovim"
+name = "Neovim"
+summary = "The extensible Vim."
+category = "cli-tools"
+tier = "welcome"
+packages = ["neovim"]
+bin = "nvim"
+
+[[item]]
+id = "direnv"
+name = "direnv"
+summary = "Load a project's environment when you enter its folder."
+category = "cli-tools"
+tier = "welcome"
+packages = ["direnv"]
+bin = "direnv"
+
+[[item]]
+id = "mise"
+name = "mise"
+summary = "Per-project tool versions, for when a Nix shell isn't the fit."
+category = "cli-tools"
+tier = "welcome"
+packages = ["mise"]
+bin = "mise"
+
+[[item]]
+id = "just"
+name = "just"
+summary = "A command runner for project tasks."
+category = "cli-tools"
+tier = "welcome"
+packages = ["just"]
+bin = "just"
+
+[[item]]
+id = "httpie"
+name = "HTTPie"
+summary = "A friendly HTTP client."
+category = "cli-tools"
+tier = "welcome"
+packages = ["httpie"]
+bin = "http"
+
+# ----- Development -----
+
+[[item]]
+id = "rust"
+name = "Rust"
+summary = "rustup, which installs and updates Rust toolchains for you."
+category = "languages"
+tier = "welcome"
+packages = ["rustup"]
+bin = "rustup"
+
+[[item]]
+id = "python"
+name = "Python"
+summary = "Python 3, uv and pipx."
+category = "languages"
+tier = "welcome"
+packages = ["python3", "uv", "pipx"]
+bin = "uv"
+
+[[item]]
+id = "node"
+name = "Node.js"
+summary = "Node.js, npm and pnpm."
+category = "languages"
+tier = "welcome"
+packages = ["nodejs", "pnpm"]
+bin = "node"
+
+[[item]]
+id = "go"
+name = "Go"
+summary = "The Go toolchain."
+category = "languages"
+tier = "welcome"
+packages = ["go"]
+bin = "go"
+
+[[item]]
+id = "java"
+name = "Java"
+summary = "OpenJDK."
+category = "languages"
+tier = "welcome"
+packages = ["jdk"]
+bin = "javac"
+
+[[item]]
+id = "c-cpp"
+name = "C and C++"
+summary = "GCC, Clang, CMake, Ninja, Make and pkg-config."
+category = "build"
+tier = "welcome"
+packages = ["gcc", "clang-tools", "cmake", "ninja", "gnumake", "pkg-config"]
+bin = "cmake"
+
+[[item]]
+id = "nix-tools"
+name = "Nix tools"
+summary = "nil and nixd for editors, nixfmt, nix-output-monitor, nh and devenv."
+category = "build"
+tier = "welcome"
+packages = ["nil", "nixd", "nixfmt", "nix-output-monitor", "nh", "devenv"]
+bin = "nixfmt"
+
+# ----- Containers and infrastructure -----
+
+[[item]]
+id = "docker"
+name = "Docker"
+summary = "Docker Engine and Compose."
+category = "containers"
+tier = "welcome"
+packages = ["docker-compose"]
+services = ["docker"]
+groups = ["docker"]
+bin = "docker"
+
+[[item]]
+id = "podman"
+name = "Podman"
+summary = "Containers without a root daemon, with Compose."
+category = "containers"
+tier = "welcome"
+packages = ["podman-compose"]
+services = ["podman"]
+bin = "podman"
+
+[[item]]
+id = "incus"
+name = "Incus"
+summary = "System containers and virtual machines."
+category = "containers"
+tier = "welcome"
+services = ["incus"]
+groups = ["incus-admin"]
+bin = "incus"
+
+[[item]]
+id = "distrobox"
+name = "Distrobox"
+summary = "Other Linux distributions in containers, in your terminal."
+category = "containers"
+tier = "welcome"
+packages = ["distrobox"]
+services = ["podman"]
+bin = "distrobox"
+
+[[item]]
+id = "qemu"
+name = "QEMU"
+summary = "Run virtual machines from the command line."
+category = "virtualization"
+tier = "welcome"
+packages = ["qemu"]
+groups = ["kvm"]
+bin = "qemu-system-x86_64"
+
+[[item]]
+id = "libvirt"
+name = "libvirt and Virtual Machine Manager"
+summary = "Manage virtual machines with virt-manager."
+category = "virtualization"
+tier = "welcome"
+packages = ["virt-manager"]
+services = ["libvirtd"]
+groups = ["libvirtd"]
+bin = "virt-manager"
+
+[[item]]
+id = "tailscale"
+name = "Tailscale"
+summary = "A private network between your devices."
+category = "network"
+tier = "welcome"
+services = ["tailscale"]
+bin = "tailscale"
+
+[[item]]
+id = "ssh-server"
+name = "Remote login (OpenSSH)"
+summary = "Sign in to this computer from others over SSH."
+category = "network"
+tier = "welcome"
+services = ["ssh"]
+note = "Opens port 22 in the firewall."
+
+[[item]]
+id = "wireguard"
+name = "WireGuard tools"
+summary = "Set up WireGuard tunnels."
+category = "network"
+tier = "welcome"
+packages = ["wireguard-tools"]
+bin = "wg"
+
+[[item]]
+id = "syncthing"
+name = "Syncthing"
+summary = "Sync folders between your devices, without a cloud."
+category = "sync"
+tier = "welcome"
+packages = ["syncthing"]
+bin = "syncthing"
+
+[[item]]
+id = "rclone"
+name = "rclone"
+summary = "Copy and mount files on cloud storage."
+category = "sync"
+tier = "welcome"
+packages = ["rclone"]
+bin = "rclone"
+
+[[item]]
+id = "restic"
+name = "restic"
+summary = "Encrypted, deduplicated backups."
+category = "sync"
+tier = "welcome"
+packages = ["restic"]
+bin = "restic"
+
+[[item]]
+id = "ansible"
+name = "Ansible"
+summary = "Automate the setup of other machines."
+category = "cloud"
+tier = "welcome"
+packages = ["ansible"]
+bin = "ansible"
+
+[[item]]
+id = "opentofu"
+name = "OpenTofu"
+summary = "Infrastructure as code (the open Terraform)."
+category = "cloud"
+tier = "welcome"
+packages = ["opentofu"]
+bin = "tofu"
+
+[[item]]
+id = "kubernetes"
+name = "Kubernetes tools"
+summary = "kubectl, Helm and k9s."
+category = "cloud"
+tier = "welcome"
+packages = ["kubectl", "kubernetes-helm", "k9s"]
+bin = "kubectl"
+
+# ----- AI agents -----
+
+[[item]]
+id = "codex"
+name = "Codex CLI"
+summary = "OpenAI's coding agent."
+category = "coding-agents"
+tier = "welcome"
+packages = ["codex"]
+bin = "codex"
+
+[[item]]
+id = "claude-code"
+name = "Claude Code"
+summary = "Anthropic's coding agent."
+category = "coding-agents"
+tier = "welcome"
+packages = ["claude-code"]
+unfree = true
+bin = "claude"
+
+[[item]]
+id = "gemini-cli"
+name = "Gemini CLI"
+summary = "Google's coding agent."
+category = "coding-agents"
+tier = "welcome"
+packages = ["gemini-cli"]
+bin = "gemini"
+
+[[item]]
+id = "opencode"
+name = "OpenCode"
+summary = "An open-source coding agent for any model."
+category = "coding-agents"
+tier = "welcome"
+packages = ["opencode"]
+bin = "opencode"
+
+[[item]]
+id = "pi"
+name = "Pi"
+summary = "A minimal, extensible coding agent."
+category = "coding-agents"
+tier = "welcome"
+packages = ["pi-coding-agent"]
+bin = "pi"
+
+[[item]]
+id = "ollama"
+name = "Ollama"
+summary = "Download and run models on this computer."
+category = "local-models"
+tier = "welcome"
+packages = ["ollama"]
+services = ["ollama"]
+bin = "ollama"
+
+[[item]]
+id = "llama-cpp"
+name = "llama.cpp"
+summary = "Run GGUF models from the command line or as a server."
+category = "local-models"
+tier = "welcome"
+packages = ["llama-cpp"]
+bin = "llama-server"
+
+# ----- Presets: starting selections, combinable -----
+
+[[preset]]
+id = "everyday"
+name = "Everyday"
+summary = "A browser, office, mail and calendar, chat and media."
+items = ["firefox", "libreoffice", "nyx-mail", "nyx-calendar", "nyx-contacts", "nyx-notes", "nyx-pdf", "nyx-passwords", "nyx-music", "nyx-media-player", "signal"]
+
+[[preset]]
+id = "developer"
+name = "Developer"
+summary = "Editors, Git tools, languages and containers."
+items = ["zed", "vscodium", "nyx-git", "gh", "lazygit", "neovim", "direnv", "just", "zellij", "rust", "python", "node", "go", "c-cpp", "nix-tools", "podman", "distrobox", "nyx-containers"]
+
+[[preset]]
+id = "ai-developer"
+name = "AI Developer"
+summary = "Coding agents and local models, with Python and Node.js."
+items = ["codex", "claude-code", "gemini-cli", "opencode", "pi", "ollama", "llama-cpp", "python", "node", "nyx-assistant", "nyx-chat", "zed"]
+
+[[preset]]
+id = "homelab"
+name = "Homelab"
+summary = "Containers, virtual machines, remote access, sync and automation."
+items = ["docker", "lazydocker", "incus", "libvirt", "tailscale", "ssh-server", "wireguard", "syncthing", "rclone", "restic", "ansible", "opentofu", "kubernetes", "nyx-containers"]

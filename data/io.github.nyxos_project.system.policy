@@ -65,4 +65,13 @@
       <allow_active>auth_admin_keep</allow_active>
     </defaults>
   </action>
+  <action id="io.github.nyxos_project.system.groups">
+    <description>Give an account access to containers, virtual machines or devices</description>
+    <message>Authentication is required to change which groups an account is in. Some, like docker, give as much access as an administrator</message>
+    <defaults>
+      <allow_any>no</allow_any>
+      <allow_inactive>no</allow_inactive>
+      <allow_active>auth_admin</allow_active>
+    </defaults>
+  </action>
 </policyconfig>
