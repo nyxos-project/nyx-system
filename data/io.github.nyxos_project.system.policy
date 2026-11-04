@@ -8,7 +8,7 @@
 
   <action id="io.github.nyxos_project.system.settings">
     <description>Change system settings</description>
-    <message>Authentication is required to change the computer's name, time zone, language, keyboard or themes</message>
+    <message>Authentication is required to change system settings: the computer's name, time zone, language, keyboard, themes, or what the lid and power button do</message>
     <defaults>
       <allow_any>no</allow_any>
       <allow_inactive>no</allow_inactive>
@@ -81,6 +81,15 @@
       <allow_any>no</allow_any>
       <allow_inactive>no</allow_inactive>
       <allow_active>auth_admin</allow_active>
+    </defaults>
+  </action>
+  <action id="io.github.nyxos_project.system.firewall">
+    <description>Change the firewall</description>
+    <message>Authentication is required to turn the firewall on or off, or open ports in it</message>
+    <defaults>
+      <allow_any>no</allow_any>
+      <allow_inactive>no</allow_inactive>
+      <allow_active>auth_admin_keep</allow_active>
     </defaults>
   </action>
 </policyconfig>

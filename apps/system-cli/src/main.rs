@@ -20,6 +20,9 @@ nyx-system: NyxOS's system settings, packages, services and generations
   nyx-system services                     The services NyxOS manages here
   nyx-system service NAME on|off|default
   nyx-system app NAME on|off|default      A Nyx app (mail, media-player, ...)
+  nyx-system firewall on|off|default
+  nyx-system port open|close PORT tcp|udp In the firewall
+  nyx-system power KEY ACTION|default     HandleLidSwitch suspend, HandlePowerKey ...
   nyx-system groups                       The groups NyxOS manages here
   nyx-system group add|remove GROUP USER
   nyx-system apply JSON|-                 Typed changes (nyx-system-proto's Change
@@ -250,6 +253,15 @@ async fn run(args: &[&str]) -> Result<()> {
         }
         ["service", name, state] => apply(vec![Change::Service { name: name.to_string(), enabled: on_off(state)? }]).await?,
         ["app", name, state] => apply(vec![Change::NyxApp { name: name.to_string(), enabled: on_off(state)? }]).await?,
+        ["firewall", state] => apply(vec![Change::Firewall { enabled: on_off(state)? }]).await?,
+        ["port", how @ ("open" | "close"), port, protocol] => {
+            let port: u16 = port.parse().context("a port is a number from 1 to 65535")?;
+            apply(vec![Change::FirewallPort { port, protocol: protocol.to_string(), open: *how == "open" }]).await?
+        }
+        ["power", key, action] => {
+            let action = (*action != "default").then(|| action.to_string());
+            apply(vec![Change::Power { key: key.to_string(), action }]).await?
+        }
         ["groups"] => {
             let s: SystemSettings = serde_json::from_str(&proxy().await?.settings().await?)?;
             for (name, what) in GROUPS {

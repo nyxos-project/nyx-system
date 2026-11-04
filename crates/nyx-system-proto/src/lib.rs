@@ -27,6 +27,8 @@ pub mod action {
     /// One change of several kinds, asked for once: what of it still needs a password
     /// after each kind's own action is checked.
     pub const APPLY: &str = "io.github.nyxos_project.system.apply";
+    /// Turning the firewall on or off, and opening ports in it.
+    pub const FIREWALL: &str = "io.github.nyxos_project.system.firewall";
 }
 
 /// System services the manager may turn on or off, with what each is.
@@ -53,6 +55,56 @@ pub const GROUPS: &[(&str, &str)] = &[
     ("kvm", "Use hardware virtualization directly"),
     ("dialout", "Use serial ports"),
 ];
+
+/// What logind does for each lid and button event (`[Login]` keys), and the actions
+/// it takes.
+pub const POWER_KEYS: &[&str] = &[
+    "HandleLidSwitch",
+    "HandleLidSwitchExternalPower",
+    "HandleLidSwitchDocked",
+    "HandlePowerKey",
+    "HandlePowerKeyLongPress",
+    "HandleSuspendKey",
+    "HandleHibernateKey",
+];
+pub const POWER_ACTIONS: &[&str] =
+    &["ignore", "poweroff", "reboot", "halt", "suspend", "hibernate", "hybrid-sleep", "suspend-then-hibernate", "lock"];
+
+/// The firewall: on or off (absent leaves the distribution's), and the ports opened.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct Firewall {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub enabled: Option<bool>,
+    #[serde(default, skip_serializing_if = "BTreeSet::is_empty")]
+    pub tcp: BTreeSet<u16>,
+    #[serde(default, skip_serializing_if = "BTreeSet::is_empty")]
+    pub udp: BTreeSet<u16>,
+}
+
+impl Firewall {
+    fn is_empty(&self) -> bool {
+        self == &Firewall::default()
+    }
+}
+
+/// Lid, button and sleep behaviour.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct Power {
+    /// [`POWER_KEYS`] and their [`POWER_ACTIONS`].
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub login: BTreeMap<String, String>,
+    /// Seconds asleep before suspend-then-hibernate hibernates.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub hibernate_delay: Option<u32>,
+}
+
+impl Power {
+    fn is_empty(&self) -> bool {
+        self == &Power::default()
+    }
+}
 
 /// The system layer's settings. Absent values leave the distribution's.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -85,6 +137,10 @@ pub struct SystemSettings {
     pub services: BTreeMap<String, bool>,
     #[serde(default, skip_serializing_if = "Themes::is_empty")]
     pub theme: Themes,
+    #[serde(default, skip_serializing_if = "Firewall::is_empty")]
+    pub firewall: Firewall,
+    #[serde(default, skip_serializing_if = "Power::is_empty")]
+    pub power: Power,
 }
 
 fn version() -> u32 {
@@ -105,6 +161,8 @@ impl Default for SystemSettings {
             groups: BTreeMap::new(),
             services: BTreeMap::new(),
             theme: Themes::default(),
+            firewall: Firewall::default(),
+            power: Power::default(),
         }
     }
 }
@@ -174,6 +232,23 @@ pub enum Change {
         user: String,
         member: bool,
     },
+    Firewall {
+        enabled: Option<bool>,
+    },
+    /// `protocol` is `tcp` or `udp`.
+    FirewallPort {
+        port: u16,
+        protocol: String,
+        open: bool,
+    },
+    /// A [`POWER_KEYS`] key and one of [`POWER_ACTIONS`] (`None` gives it back).
+    Power {
+        key: String,
+        action: Option<String>,
+    },
+    HibernateDelay {
+        seconds: Option<u32>,
+    },
 }
 
 impl Change {
@@ -183,6 +258,7 @@ impl Change {
             Change::AddPackages { .. } | Change::RemovePackages { .. } | Change::NyxApp { .. } => action::PACKAGES,
             Change::Service { .. } => action::SERVICES,
             Change::GroupMember { .. } => action::GROUPS,
+            Change::Firewall { .. } | Change::FirewallPort { .. } => action::FIREWALL,
             _ => action::SETTINGS,
         }
     }
@@ -223,6 +299,23 @@ impl Change {
                 ensure!(valid_user(user), "not a valid user name: {user}");
                 Ok(())
             }
+            Change::Firewall { .. } => Ok(()),
+            Change::FirewallPort { port, protocol, .. } => {
+                ensure!(*port > 0, "port 0 isn't a port");
+                ensure!(matches!(protocol.as_str(), "tcp" | "udp"), "the protocol is tcp or udp, not {protocol}");
+                Ok(())
+            }
+            Change::Power { key, action } => {
+                ensure!(POWER_KEYS.contains(&key.as_str()), "not a lid or button setting: {key}");
+                if let Some(a) = action {
+                    ensure!(POWER_ACTIONS.contains(&a.as_str()), "not something logind does: {a}");
+                }
+                Ok(())
+            }
+            Change::HibernateDelay { seconds } => {
+                ensure!(seconds.is_none_or(|s| (60..=7 * 24 * 3600).contains(&s)), "between a minute and a week");
+                Ok(())
+            }
         }
     }
 }
@@ -257,6 +350,22 @@ impl SystemSettings {
                 Change::NyxApp { name, enabled: None } => {
                     s.nyx_apps.remove(name);
                 }
+                Change::Firewall { enabled } => s.firewall.enabled = *enabled,
+                Change::FirewallPort { port, protocol, open } => {
+                    let ports = if protocol == "udp" { &mut s.firewall.udp } else { &mut s.firewall.tcp };
+                    if *open {
+                        ports.insert(*port);
+                    } else {
+                        ports.remove(port);
+                    }
+                }
+                Change::Power { key, action: Some(a) } => {
+                    s.power.login.insert(key.clone(), a.clone());
+                }
+                Change::Power { key, action: None } => {
+                    s.power.login.remove(key);
+                }
+                Change::HibernateDelay { seconds } => s.power.hibernate_delay = *seconds,
                 Change::GroupMember { group, user, member } => {
                     let users = s.groups.entry(group.clone()).or_default();
                     if *member {
@@ -416,6 +525,16 @@ mod tests {
         assert_eq!(s.packages.len(), 3);
         assert!(s.unfree.contains("vscode") && s.nyx_apps.get("mail") == Some(&true));
         assert!(s.groups["docker"].contains("ken"));
+        let s = s
+            .with(&[
+                Change::Firewall { enabled: Some(true) },
+                Change::FirewallPort { port: 8080, protocol: "tcp".into(), open: true },
+                Change::Power { key: "HandleLidSwitch".into(), action: Some("suspend-then-hibernate".into()) },
+                Change::HibernateDelay { seconds: Some(1800) },
+            ])
+            .unwrap();
+        assert!(s.firewall.tcp.contains(&8080) && s.power.login["HandleLidSwitch"] == "suspend-then-hibernate");
+        assert_eq!(SystemSettings::parse(&serde_json::to_string(&s).unwrap()).unwrap(), s);
         assert_eq!(s.services.get("printing"), Some(&true));
         let back = s
             .with(&[
@@ -442,6 +561,10 @@ mod tests {
             Change::NyxApp { name: "../mail".into(), enabled: Some(true) },
             Change::GroupMember { group: "wheel".into(), user: "ken".into(), member: true },
             Change::GroupMember { group: "docker".into(), user: "Ken;".into(), member: true },
+            Change::FirewallPort { port: 22, protocol: "sctp".into(), open: true },
+            Change::Power { key: "KillUserProcesses".into(), action: Some("yes".into()) },
+            Change::Power { key: "HandleLidSwitch".into(), action: Some("rm -rf".into()) },
+            Change::HibernateDelay { seconds: Some(1) },
             Change::Service { name: "sshd-root".into(), enabled: Some(true) },
         ] {
             assert!(bad.validate().is_err(), "{bad:?}");
