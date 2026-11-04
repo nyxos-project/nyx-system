@@ -28,6 +28,10 @@ nyx-system: NyxOS's system settings, packages, services and generations
   nyx-system person admin NAME on|off
   nyx-system full-name USER 'FULL NAME'
   nyx-system password USER                Reads the new password from stdin
+  nyx-system mount add ID JSON [--login-stdin]
+                                          A drive or share at startup (JSON: what,
+                                          dir, fsType, options), its login from stdin
+  nyx-system mount remove ID
   nyx-system groups                       The groups NyxOS manages here
   nyx-system group add|remove GROUP USER
   nyx-system apply JSON|-                 Typed changes (nyx-system-proto's Change
@@ -294,6 +298,15 @@ async fn run(args: &[&str]) -> Result<()> {
             std::io::stdin().read_line(&mut line)?;
             proxy().await?.set_password(user, line.trim_end_matches(['\n', '\r'])).await?;
         }
+        ["mount", "add", id, json, rest @ ..] if rest.iter().all(|a| *a == "--login-stdin") => {
+            let mut login = String::new();
+            if !rest.is_empty() {
+                std::io::Read::read_to_string(&mut std::io::stdin(), &mut login)?;
+            }
+            let p = proxy().await?;
+            println!("{}", with_progress(&p, p.add_mount(id, json, login.trim())).await?);
+        }
+        ["mount", "remove", id] => apply(vec![Change::RemoveMount { id: id.to_string() }]).await?,
         ["groups"] => {
             let s: SystemSettings = serde_json::from_str(&proxy().await?.settings().await?)?;
             for (name, what) in GROUPS {

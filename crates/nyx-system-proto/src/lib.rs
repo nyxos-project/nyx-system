@@ -36,6 +36,8 @@ pub mod action {
     pub const ACCOUNTS: &str = "io.github.nyxos_project.system.accounts";
     /// Changing your own password (asks for it).
     pub const PASSWORD: &str = "io.github.nyxos_project.system.password";
+    /// Mounting drives and network shares at startup.
+    pub const MOUNTS: &str = "io.github.nyxos_project.system.mounts";
 }
 
 /// System services the manager may turn on or off, with what each is.
@@ -123,6 +125,65 @@ pub struct Person {
     pub admin: bool,
 }
 
+/// Where a share's login is kept (root only, never in the configuration).
+pub const MOUNT_LOGINS: &str = "/etc/nyxos/secrets/mounts";
+
+/// Filesystems a mount may have: drives' and network shares'.
+pub const MOUNT_TYPES: &[&str] =
+    &["ext4", "ext3", "ext2", "btrfs", "xfs", "f2fs", "vfat", "exfat", "ntfs3", "cifs", "nfs", "nfs4"];
+
+/// A drive or network share mounted at startup.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct Mount {
+    /// A partition's UUID, or a share: `//server/share` (cifs), `server:/path` (nfs).
+    pub what: String,
+    pub dir: String,
+    pub fs_type: String,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub options: Vec<String>,
+    /// A share login is kept in [`MOUNT_LOGINS`].
+    #[serde(default)]
+    pub login: bool,
+}
+
+impl Mount {
+    pub fn validate(&self) -> Result<()> {
+        ensure!(MOUNT_TYPES.contains(&self.fs_type.as_str()), "not a filesystem NyxOS mounts: {}", self.fs_type);
+        let network = matches!(self.fs_type.as_str(), "cifs" | "nfs" | "nfs4");
+        let host =
+            |h: &str| !h.is_empty() && h.len() < 254 && h.bytes().all(|b| b.is_ascii_alphanumeric() || b".-_[]:".contains(&b));
+        let text = |s: &str| !s.is_empty() && s.len() < 512 && !s.contains(['\n', ' ', '\t', ',', '\'', '"', '\\']);
+        let ok = if !network {
+            self.what.len() <= 64 && !self.what.is_empty() && self.what.bytes().all(|b| b.is_ascii_hexdigit() || b == b'-')
+        } else if self.fs_type == "cifs" {
+            self.what.strip_prefix("//").and_then(|r| r.split_once('/')).is_some_and(|(h, s)| host(h) && text(s))
+        } else {
+            self.what.split_once(":/").is_some_and(|(h, p)| host(h) && (p.is_empty() || text(p)))
+        };
+        ensure!(ok, "not a {}: {}", if network { "share address" } else { "partition UUID" }, self.what);
+        ensure!(!self.login || self.fs_type == "cifs", "only Windows (SMB) shares take a login");
+        let parts: Vec<&str> = self.dir.split('/').collect();
+        ensure!(
+            self.dir.len() < 256
+                && self.dir.starts_with('/')
+                && parts.iter().skip(1).all(|p| !p.is_empty() && *p != "." && *p != ".." && text(p))
+                && (matches!(parts.get(1), Some(&"mnt") | Some(&"media")) && parts.len() > 2
+                    || parts.get(1) == Some(&"home") && parts.len() > 3),
+            "a mount folder is inside /mnt, /media or someone's home folder, not {}",
+            self.dir
+        );
+        for o in &self.options {
+            ensure!(
+                !o.is_empty() && o.len() < 100 && o.bytes().all(|b| b.is_ascii_alphanumeric() || b"=_.-".contains(&b)),
+                "not a mount option NyxOS sets: {o}"
+            );
+            ensure!(!o.starts_with("credentials") && !o.starts_with("x-systemd.requires"), "not a mount option NyxOS sets: {o}");
+        }
+        Ok(())
+    }
+}
+
 /// The system layer's settings. Absent values leave the distribution's.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -164,6 +225,9 @@ pub struct SystemSettings {
     /// Full names of accounts declared elsewhere (the primary user's, from the host).
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub full_names: BTreeMap<String, String>,
+    /// Drives and shares mounted at startup, by id.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub mounts: BTreeMap<String, Mount>,
 }
 
 fn version() -> u32 {
@@ -188,6 +252,7 @@ impl Default for SystemSettings {
             power: Power::default(),
             people: BTreeMap::new(),
             full_names: BTreeMap::new(),
+            mounts: BTreeMap::new(),
         }
     }
 }
@@ -291,6 +356,13 @@ pub enum Change {
         user: String,
         full_name: String,
     },
+    AddMount {
+        id: String,
+        mount: Mount,
+    },
+    RemoveMount {
+        id: String,
+    },
 }
 
 impl Change {
@@ -304,6 +376,7 @@ impl Change {
             Change::AddPerson { .. } | Change::RemovePerson { .. } | Change::PersonAdmin { .. } | Change::FullName { .. } => {
                 action::ACCOUNTS
             }
+            Change::AddMount { .. } | Change::RemoveMount { .. } => action::MOUNTS,
             _ => action::SETTINGS,
         }
     }
@@ -375,6 +448,14 @@ impl Change {
                 ensure!(valid_full_name(full_name), "a name is up to 100 characters, without : or line breaks");
                 Ok(())
             }
+            Change::AddMount { id, mount } => {
+                ensure!(valid_mount_id(id), "not a mount id: {id}");
+                mount.validate()
+            }
+            Change::RemoveMount { id } => {
+                ensure!(valid_mount_id(id), "not a mount id: {id}");
+                Ok(())
+            }
         }
     }
 }
@@ -440,6 +521,14 @@ impl SystemSettings {
                     Some(p) => p.admin = *admin,
                     None => bail!("{name}'s account wasn't made by NyxOS; its rights are set in this computer's configuration"),
                 },
+                Change::AddMount { id, mount } => {
+                    ensure!(!s.mounts.contains_key(id), "there's already a mount called {id}");
+                    ensure!(!s.mounts.values().any(|m| m.dir == mount.dir), "something already mounts at {}", mount.dir);
+                    s.mounts.insert(id.clone(), mount.clone());
+                }
+                Change::RemoveMount { id } => {
+                    ensure!(s.mounts.remove(id).is_some(), "there's no mount called {id}");
+                }
                 Change::FullName { user, full_name } => match s.people.get_mut(user) {
                     Some(p) => p.full_name = full_name.clone(),
                     // An empty name gives it back to the configuration.
@@ -549,6 +638,13 @@ pub fn valid_user(u: &str) -> bool {
         && u.starts_with(|c: char| c.is_ascii_lowercase() || c == '_')
 }
 
+/// `nas-photos`.
+pub fn valid_mount_id(id: &str) -> bool {
+    (1..=40).contains(&id.len())
+        && id.bytes().all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-')
+        && !id.starts_with('-')
+}
+
 /// Names that aren't people's accounts.
 pub fn reserved_user(u: &str) -> bool {
     matches!(u, "root" | "nobody" | "daemon" | "bin" | "sys" | "sshd" | "messagebus" | "polkituser" | "greeter" | "nixos")
@@ -601,6 +697,9 @@ pub trait System {
     /// Set a person's password (asks for your own when it's yours, an administrator's
     /// otherwise). Never stored in the configuration.
     fn set_password(&self, user: &str, password: &str) -> zbus::Result<()>;
+    /// Mount a drive or share at startup (`mount` is JSON [`Mount`]), with a share's
+    /// login (`username=…` lines) kept apart; empty for none.
+    fn add_mount(&self, id: &str, mount: &str, login: &str) -> zbus::Result<String>;
     /// Add an account and set its password, with one authorization.
     fn add_person(&self, name: &str, full_name: &str, admin: bool, password: &str) -> zbus::Result<String>;
     /// A line of build or switch output.
@@ -652,6 +751,23 @@ mod tests {
         assert!(s.with(&[Change::FullName { user: "ken".into(), full_name: String::new() }]).unwrap().full_names.is_empty());
         assert!(s.with(&[Change::RemovePerson { name: "ken".into() }]).is_err());
         assert!(s.with(&[Change::RemovePerson { name: "ana".into() }]).unwrap().people.is_empty());
+        let nas = Mount {
+            what: "//nas.local/photos".into(),
+            dir: "/mnt/photos".into(),
+            fs_type: "cifs".into(),
+            options: vec!["nofail".into(), "x-systemd.automount".into()],
+            login: true,
+        };
+        let s = s.with(&[Change::AddMount { id: "photos".into(), mount: nas.clone() }]).unwrap();
+        assert!(s.with(&[Change::AddMount { id: "photos2".into(), mount: nas }]).is_err(), "the same folder twice");
+        let disk = Mount {
+            what: "0a1b-2c3d".into(),
+            dir: "/home/ken/Data".into(),
+            fs_type: "exfat".into(),
+            options: vec![],
+            login: false,
+        };
+        assert!(s.with(&[Change::AddMount { id: "data".into(), mount: disk }]).is_ok());
         assert_eq!(s.services.get("printing"), Some(&true));
         let back = s
             .with(&[
@@ -684,6 +800,46 @@ mod tests {
             Change::HibernateDelay { seconds: Some(1) },
             Change::AddPerson { name: "root".into(), full_name: "x".into(), admin: true },
             Change::AddPerson { name: "ana".into(), full_name: "Ana:0:0".into(), admin: false },
+            Change::AddMount {
+                id: "x".into(),
+                mount: Mount {
+                    what: "//nas/share".into(),
+                    dir: "/etc".into(),
+                    fs_type: "cifs".into(),
+                    options: vec![],
+                    login: false,
+                },
+            },
+            Change::AddMount {
+                id: "x".into(),
+                mount: Mount {
+                    what: "//nas/share".into(),
+                    dir: "/mnt/nas".into(),
+                    fs_type: "cifs".into(),
+                    options: vec!["credentials=/etc/shadow".into()],
+                    login: false,
+                },
+            },
+            Change::AddMount {
+                id: "x".into(),
+                mount: Mount {
+                    what: "//nas/a b".into(),
+                    dir: "/mnt/nas".into(),
+                    fs_type: "cifs".into(),
+                    options: vec![],
+                    login: false,
+                },
+            },
+            Change::AddMount {
+                id: "x".into(),
+                mount: Mount {
+                    what: "ab12".into(),
+                    dir: "/mnt/../etc".into(),
+                    fs_type: "ext4".into(),
+                    options: vec![],
+                    login: false,
+                },
+            },
             Change::Service { name: "sshd-root".into(), enabled: Some(true) },
         ] {
             assert!(bad.validate().is_err(), "{bad:?}");

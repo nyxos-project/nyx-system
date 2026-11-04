@@ -260,6 +260,13 @@ impl Manager {
         let _guard = self.busy.try_lock().map_err(|_| failed("another system change is running"))?;
         let summary = serde_json::to_string(&changes).unwrap_or_default();
         let result = rebuild::apply(&self.config, &changes, &emitter).await;
+        if result.is_ok() {
+            for c in &changes {
+                if let Change::RemoveMount { id } = c {
+                    let _ = std::fs::remove_file(std::path::Path::new(nyx_system_proto::MOUNT_LOGINS).join(id));
+                }
+            }
+        }
         audit(uid, &actions.join(","), &summary, result.as_ref().map(String::as_str).unwrap_or("failed"));
         self.touch();
         result.map_err(failed)
@@ -329,6 +336,46 @@ impl Manager {
         let _guard = self.busy.try_lock().map_err(|_| failed("another system change is running"))?;
         let result = rebuild::rollback(&self.config, &emitter).await;
         audit(uid, action::ROLLBACK, "rollback", result.as_ref().map(String::as_str).unwrap_or("failed"));
+        self.touch();
+        result.map_err(failed)
+    }
+
+    /// Mount a drive or share at startup, keeping a share's login apart (root only).
+    async fn add_mount(
+        &self,
+        #[zbus(header)] header: Header<'_>,
+        #[zbus(connection)] conn: &Connection,
+        #[zbus(signal_emitter)] emitter: SignalEmitter<'_>,
+        id: &str,
+        mount: &str,
+        login: &str,
+    ) -> fdo::Result<String> {
+        self.touch();
+        let mut mount: nyx_system_proto::Mount =
+            serde_json::from_str(mount).map_err(|e| fdo::Error::InvalidArgs(e.to_string()))?;
+        mount.login = !login.is_empty();
+        let change = Change::AddMount { id: id.into(), mount };
+        change.validate().map_err(|e| fdo::Error::InvalidArgs(e.to_string()))?;
+        let login_ok = login.len() < 2048
+            && login.lines().all(|l| ["username=", "password=", "domain="].iter().any(|k| l.starts_with(k)) && !l.contains('\0'));
+        if !login_ok {
+            return Err(fdo::Error::InvalidArgs("a login is username=, password= and domain= lines".into()));
+        }
+        let uid = authorize(conn, &header, action::MOUNTS).await?;
+        let _guard = self.busy.try_lock().map_err(|_| failed("another system change is running"))?;
+        let file = std::path::Path::new(nyx_system_proto::MOUNT_LOGINS).join(id);
+        if !login.is_empty() {
+            use std::os::unix::fs::{DirBuilderExt, OpenOptionsExt};
+            std::fs::DirBuilder::new().recursive(true).mode(0o700).create(nyx_system_proto::MOUNT_LOGINS).map_err(failed)?;
+            let mut f =
+                std::fs::OpenOptions::new().write(true).create(true).truncate(true).mode(0o600).open(&file).map_err(failed)?;
+            std::io::Write::write_all(&mut f, format!("{}\n", login.trim_end()).as_bytes()).map_err(failed)?;
+        }
+        let result = rebuild::apply(&self.config, std::slice::from_ref(&change), &emitter).await;
+        audit(uid, action::MOUNTS, &format!("add mount {id}"), result.as_ref().map(String::as_str).unwrap_or("failed"));
+        if result.is_err() {
+            let _ = std::fs::remove_file(&file);
+        }
         self.touch();
         result.map_err(failed)
     }

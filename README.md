@@ -32,7 +32,7 @@ the settings each generation was built from, so a rollback brings them back too.
 ## The System Manager
 
 Each method checks its caller with polkit, one action per kind of change
-(`io.github.nyxos_project.system.{settings,packages,services,groups,firewall,clean,accounts,password,defaults,update,rollback}`),
+(`io.github.nyxos_project.system.{settings,packages,services,groups,firewall,clean,accounts,password,mounts,defaults,update,rollback}`),
 and writes an audit line to the journal. Joining a group asks for an administrator every
 time, since some (docker) are as good as root; only people's accounts are added. A change of
 several kinds asks once: each kind's action is checked without asking (what polkit denies
