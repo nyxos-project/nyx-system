@@ -22,6 +22,8 @@ nyx-system: NyxOS's system settings, packages, services and generations
   nyx-system app NAME on|off|default      A Nyx app (mail, media-player, ...)
   nyx-system groups                       The groups NyxOS manages here
   nyx-system group add|remove GROUP USER
+  nyx-system apply JSON|-                 Typed changes (nyx-system-proto's Change
+                                          list), from the argument or stdin
   nyx-system update                       Update NyxOS and its apps, then switch
   nyx-system generations
   nyx-system rollback                     Back to the previous generation
@@ -257,6 +259,20 @@ async fn run(args: &[&str]) -> Result<()> {
         }
         ["group", how @ ("add" | "remove"), group, user] => {
             apply(vec![Change::GroupMember { group: group.to_string(), user: user.to_string(), member: *how == "add" }]).await?
+        }
+        ["apply", json] => {
+            let text = if *json == "-" {
+                let mut s = String::new();
+                std::io::Read::read_to_string(&mut std::io::stdin(), &mut s)?;
+                s
+            } else {
+                json.to_string()
+            };
+            let changes: Vec<Change> = serde_json::from_str(&text).context("not a list of changes")?;
+            if changes.is_empty() {
+                bail!("no changes given");
+            }
+            apply(changes).await?
         }
         ["update"] => {
             let p = proxy().await?;
