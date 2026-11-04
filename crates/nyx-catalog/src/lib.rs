@@ -1,4 +1,4 @@
-//! The NyxOS software catalog (`data/catalog.toml`), shared by Nyx Welcome, Nyx Store
+//! The NyxOS software catalog (`catalog.toml`), shared by Nyx Welcome, Nyx Store
 //! and `nyx-system catalog`: sections and categories, the items in three tiers (base,
 //! welcome, store) and the presets.
 //!
@@ -18,7 +18,7 @@ pub const PATH: &str = "/run/current-system/sw/share/nyx/catalog.toml";
 /// The Nyx apps the running system has (`nyx.<name>.enable`), one per line.
 pub const NYX_APPS: &str = "/etc/nyx/apps";
 
-const BUILTIN: &str = include_str!("../../../data/catalog.toml");
+const BUILTIN: &str = include_str!("../catalog.toml");
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Deserialize)]
 #[serde(rename_all = "lowercase")]

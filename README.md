@@ -10,7 +10,7 @@ theme service.
 | `nyx-system` | Its command line, and the configuration layers' |
 | `nyx-config` | The configuration layers as a library |
 | `nyx-system-proto` | The settings, changes and D-Bus interface, for clients |
-| `nyx-catalog` | The software catalog (`data/catalog.toml`), and the changes that install from it |
+| `nyx-catalog` | The software catalog (`crates/nyx-catalog/catalog.toml`), and the changes that install from it |
 | `nyx-themed` | User service: the chosen Nyx theme on Hyprland, Foot, GTK and the wallpaper, live |
 
 ## Configuration layers
@@ -54,7 +54,7 @@ nyx-system config show appearance              # merged, with each value's layer
 
 ## Software catalog
 
-`data/catalog.toml` is what Nyx Welcome, Nyx Store and `nyx-system catalog` offer, in
+`crates/nyx-catalog/catalog.toml` is what Nyx Welcome, Nyx Store and `nyx-system catalog` offer, in
 sections (Welcome's steps) and categories, with four presets (Everyday, Developer, AI
 Developer, Homelab) that are starting selections. Items are in three tiers: base
 (preinstalled), welcome and store. Each says what it installs (nixpkgs packages for
