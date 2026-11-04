@@ -601,6 +601,8 @@ pub trait System {
     /// Set a person's password (asks for your own when it's yours, an administrator's
     /// otherwise). Never stored in the configuration.
     fn set_password(&self, user: &str, password: &str) -> zbus::Result<()>;
+    /// Add an account and set its password, with one authorization.
+    fn add_person(&self, name: &str, full_name: &str, admin: bool, password: &str) -> zbus::Result<String>;
     /// A line of build or switch output.
     #[zbus(signal)]
     fn progress(&self, line: &str) -> zbus::Result<()>;

@@ -185,6 +185,29 @@ fn declared() -> Vec<String> {
     std::fs::read_to_string("/var/lib/nixos/declarative-users").unwrap_or_default().split_whitespace().map(String::from).collect()
 }
 
+fn valid_password(password: &str) -> Result<(), fdo::Error> {
+    if password.is_empty() || password.len() > 512 || password.contains(['\n', '\r', '\0']) {
+        return Err(fdo::Error::InvalidArgs("a password is 1 to 512 characters on one line".into()));
+    }
+    Ok(())
+}
+
+/// Set a password with chpasswd; it never touches the configuration.
+async fn chpasswd(user: &str, password: &str) -> Result<(), String> {
+    use tokio::io::AsyncWriteExt;
+    let mut child = tokio::process::Command::new("chpasswd")
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+        .map_err(|e| e.to_string())?;
+    if let Some(mut stdin) = child.stdin.take() {
+        stdin.write_all(format!("{user}:{password}\n").as_bytes()).await.map_err(|e| e.to_string())?;
+    }
+    let out = child.wait_with_output().await.map_err(|e| e.to_string())?;
+    if out.status.success() { Ok(()) } else { Err(String::from_utf8_lossy(&out.stderr).trim().to_string()) }
+}
+
 /// Checks against the running system that the changes themselves can't make.
 fn check_against_system(c: &Change) -> Result<(), String> {
     match c {
@@ -310,6 +333,36 @@ impl Manager {
         result.map_err(failed)
     }
 
+    /// Add an account and set its password, asked for once.
+    #[allow(clippy::too_many_arguments)]
+    async fn add_person(
+        &self,
+        #[zbus(header)] header: Header<'_>,
+        #[zbus(connection)] conn: &Connection,
+        #[zbus(signal_emitter)] emitter: SignalEmitter<'_>,
+        name: &str,
+        full_name: &str,
+        admin: bool,
+        password: &str,
+    ) -> fdo::Result<String> {
+        self.touch();
+        let change = Change::AddPerson { name: name.into(), full_name: full_name.into(), admin };
+        change.validate().map_err(|e| fdo::Error::InvalidArgs(e.to_string()))?;
+        check_against_system(&change).map_err(fdo::Error::InvalidArgs)?;
+        valid_password(password)?;
+        let uid = authorize(conn, &header, action::ACCOUNTS).await?;
+        let _guard = self.busy.try_lock().map_err(|_| failed("another system change is running"))?;
+        let result = rebuild::apply(&self.config, std::slice::from_ref(&change), &emitter).await;
+        audit(uid, action::ACCOUNTS, &format!("add {name}"), result.as_ref().map(String::as_str).unwrap_or("failed"));
+        let summary = result.map_err(failed)?;
+        chpasswd(name, password)
+            .await
+            .map_err(|e| failed(format!("{name}'s account was added, but its password couldn't be set: {e}")))?;
+        audit(uid, action::ACCOUNTS, &format!("password for {name}"), "done");
+        self.touch();
+        Ok(summary)
+    }
+
     async fn set_password(
         &self,
         #[zbus(header)] header: Header<'_>,
@@ -323,9 +376,7 @@ impl Manager {
         else {
             return Err(fdo::Error::InvalidArgs(format!("{user} isn't a person's account on this computer")));
         };
-        if password.is_empty() || password.len() > 512 || password.contains(['\n', '\r', '\0']) {
-            return Err(fdo::Error::InvalidArgs("a password is 1 to 512 characters on one line".into()));
-        }
+        valid_password(password)?;
         let sender = header.sender().ok_or_else(|| fdo::Error::AccessDenied("no sender".into()))?.to_string();
         let caller = fdo::DBusProxy::new(conn)
             .await?
@@ -333,23 +384,9 @@ impl Manager {
             .await?;
         let act = if caller == target { action::PASSWORD } else { action::ACCOUNTS };
         let uid = authorize(conn, &header, act).await?;
-        let mut child = tokio::process::Command::new("chpasswd")
-            .stdin(std::process::Stdio::piped())
-            .stdout(std::process::Stdio::null())
-            .stderr(std::process::Stdio::piped())
-            .spawn()
-            .map_err(failed)?;
-        if let Some(mut stdin) = child.stdin.take() {
-            use tokio::io::AsyncWriteExt;
-            stdin.write_all(format!("{user}:{password}\n").as_bytes()).await.map_err(failed)?;
-        }
-        let out = child.wait_with_output().await.map_err(failed)?;
-        let ok = out.status.success();
-        audit(uid, act, &format!("password for {user}"), if ok { "done" } else { "failed" });
-        if !ok {
-            return Err(failed(String::from_utf8_lossy(&out.stderr).trim()));
-        }
-        Ok(())
+        let r = chpasswd(user, password).await;
+        audit(uid, act, &format!("password for {user}"), if r.is_ok() { "done" } else { "failed" });
+        r.map_err(failed)
     }
 
     async fn collect_garbage(

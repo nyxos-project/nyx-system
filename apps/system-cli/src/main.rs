@@ -23,7 +23,7 @@ nyx-system: NyxOS's system settings, packages, services and generations
   nyx-system firewall on|off|default
   nyx-system port open|close PORT tcp|udp In the firewall
   nyx-system power KEY ACTION|default     HandleLidSwitch suspend, HandlePowerKey ...
-  nyx-system person add NAME 'FULL NAME' [--admin]
+  nyx-system person add NAME 'FULL NAME' [--admin] [--password-stdin]
   nyx-system person remove NAME           An account NyxOS made (its home stays)
   nyx-system person admin NAME on|off
   nyx-system full-name USER 'FULL NAME'
@@ -270,9 +270,17 @@ async fn run(args: &[&str]) -> Result<()> {
             let action = (*action != "default").then(|| action.to_string());
             apply(vec![Change::Power { key: key.to_string(), action }]).await?
         }
-        ["person", "add", name, full_name, rest @ ..] if rest.iter().all(|a| *a == "--admin") => {
-            let admin = !rest.is_empty();
-            apply(vec![Change::AddPerson { name: name.to_string(), full_name: full_name.to_string(), admin }]).await?
+        ["person", "add", name, full_name, rest @ ..] if rest.iter().all(|a| matches!(*a, "--admin" | "--password-stdin")) => {
+            let admin = rest.contains(&"--admin");
+            if rest.contains(&"--password-stdin") {
+                let mut line = String::new();
+                std::io::stdin().read_line(&mut line)?;
+                let p = proxy().await?;
+                let password = line.trim_end_matches(['\n', '\r']).to_string();
+                println!("{}", with_progress(&p, p.add_person(name, full_name, admin, &password)).await?);
+            } else {
+                apply(vec![Change::AddPerson { name: name.to_string(), full_name: full_name.to_string(), admin }]).await?
+            }
         }
         ["person", "remove", name] => apply(vec![Change::RemovePerson { name: name.to_string() }]).await?,
         ["person", "admin", name, state @ ("on" | "off")] => {
