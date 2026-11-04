@@ -157,21 +157,27 @@ impl Manager {
     }
 }
 
-/// Accounts in /etc/passwd: name and uid.
-fn accounts() -> Vec<(String, u32)> {
+/// Accounts in /etc/passwd: name, uid and shell.
+fn accounts() -> Vec<(String, u32, String)> {
     std::fs::read_to_string("/etc/passwd")
         .unwrap_or_default()
         .lines()
         .filter_map(|l| {
             let f: Vec<&str> = l.split(':').collect();
-            Some((f.first()?.to_string(), f.get(2)?.parse().ok()?))
+            Some((f.first()?.to_string(), f.get(2)?.parse().ok()?, f.get(6).unwrap_or(&"").to_string()))
         })
         .collect()
 }
 
-/// People's accounts (uid 1000 to 59999), the only ones a group is given to.
+/// A person's account: a uid from 1000 to 59999 and a shell to sign in with (NixOS's
+/// build users have uids there too, but no shell).
+fn is_person(uid: u32, shell: &str) -> bool {
+    (1000..60000).contains(&uid) && !shell.ends_with("/nologin") && !shell.ends_with("/false")
+}
+
+/// People's accounts, the only ones a group is given to or a password set for.
 fn people() -> Vec<String> {
-    accounts().into_iter().filter(|(_, uid)| (1000..60000).contains(uid)).map(|(n, _)| n).collect()
+    accounts().into_iter().filter(|(_, uid, shell)| is_person(*uid, shell)).map(|(n, _, _)| n).collect()
 }
 
 /// Accounts the NixOS configuration declares (the only ones it can rename).
@@ -185,7 +191,7 @@ fn check_against_system(c: &Change) -> Result<(), String> {
         Change::GroupMember { user, member: true, .. } if !people().contains(user) => {
             Err(format!("{user} isn't a person's account on this computer"))
         }
-        Change::AddPerson { name, .. } if accounts().iter().any(|(n, _)| n == name) => {
+        Change::AddPerson { name, .. } if accounts().iter().any(|(n, _, _)| n == name) => {
             Err(format!("there's already an account called {name}"))
         }
         Change::FullName { user, .. } if !people().contains(user) || !declared().contains(user) => {
@@ -193,6 +199,14 @@ fn check_against_system(c: &Change) -> Result<(), String> {
         }
         _ => Ok(()),
     }
+}
+
+#[cfg(test)]
+#[test]
+fn build_users_arent_people() {
+    assert!(is_person(1000, "/run/current-system/sw/bin/zsh"));
+    assert!(!is_person(30001, "/run/current-system/sw/bin/nologin"));
+    assert!(!is_person(65534, "/run/current-system/sw/bin/zsh"));
 }
 
 #[zbus::interface(name = "io.github.nyxos_project.System1")]
@@ -304,7 +318,9 @@ impl Manager {
         password: &str,
     ) -> fdo::Result<()> {
         self.touch();
-        let Some(&(_, target)) = accounts().iter().find(|(n, uid)| n == user && (1000..60000).contains(uid)) else {
+        let Some(target) =
+            accounts().into_iter().find(|(n, uid, shell)| n == user && is_person(*uid, shell)).map(|(_, uid, _)| uid)
+        else {
             return Err(fdo::Error::InvalidArgs(format!("{user} isn't a person's account on this computer")));
         };
         if password.is_empty() || password.len() > 512 || password.contains(['\n', '\r', '\0']) {
