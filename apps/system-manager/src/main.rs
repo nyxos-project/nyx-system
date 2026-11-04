@@ -251,17 +251,29 @@ impl Manager {
 /// Exit after this long without a call, unless a change is running.
 const IDLE: Duration = Duration::from_secs(300);
 
+/// Whether the running system has another version of the manager: its unit isn't
+/// restarted by a switch (it runs the switch), so it exits once idle and the next
+/// call starts the new one.
+fn stale() -> bool {
+    let current = std::fs::canonicalize("/run/current-system/sw/bin/nyx-system-manager");
+    let running = std::env::current_exe().and_then(std::fs::canonicalize);
+    matches!((current, running), (Ok(c), Ok(r)) if c != r)
+}
+
 #[tokio::main(flavor = "current_thread")]
 async fn main() -> Result<()> {
     let config = Config::load()?;
     let last_use = Arc::new(std::sync::Mutex::new(Instant::now()));
     let manager = Manager { config, busy: Mutex::new(()), last_use: last_use.clone() };
     let conn = zbus::connection::Builder::system()?.name(BUS_NAME)?.serve_at(OBJECT_PATH, manager)?.build().await?;
+    // Stale for two ticks in a row, so the reply to the call that switched has gone out.
+    let mut stale_ticks = 0;
     loop {
-        tokio::time::sleep(Duration::from_secs(30)).await;
+        tokio::time::sleep(Duration::from_secs(1)).await;
+        stale_ticks = if stale() { stale_ticks + 1 } else { 0 };
         let idle = last_use.lock().unwrap().elapsed() > IDLE;
         let iface = conn.object_server().interface::<_, Manager>(OBJECT_PATH).await?;
-        if idle && iface.get().await.busy.try_lock().is_ok() {
+        if (idle || stale_ticks >= 2) && iface.get().await.busy.try_lock().is_ok() {
             return Ok(());
         }
     }
