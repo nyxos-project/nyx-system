@@ -101,4 +101,23 @@
       <allow_active>auth_admin_keep</allow_active>
     </defaults>
   </action>
+  <action id="io.github.nyxos_project.system.accounts">
+    <description>Manage people's accounts</description>
+    <message>Authentication is required to add or remove accounts, change their names or administrator rights, or set someone else's password</message>
+    <defaults>
+      <allow_any>no</allow_any>
+      <allow_inactive>no</allow_inactive>
+      <allow_active>auth_admin_keep</allow_active>
+    </defaults>
+  </action>
+
+  <action id="io.github.nyxos_project.system.password">
+    <description>Change your password</description>
+    <message>Authentication is required to change your password</message>
+    <defaults>
+      <allow_any>no</allow_any>
+      <allow_inactive>no</allow_inactive>
+      <allow_active>auth_self</allow_active>
+    </defaults>
+  </action>
 </policyconfig>

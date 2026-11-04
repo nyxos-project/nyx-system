@@ -23,6 +23,11 @@ nyx-system: NyxOS's system settings, packages, services and generations
   nyx-system firewall on|off|default
   nyx-system port open|close PORT tcp|udp In the firewall
   nyx-system power KEY ACTION|default     HandleLidSwitch suspend, HandlePowerKey ...
+  nyx-system person add NAME 'FULL NAME' [--admin]
+  nyx-system person remove NAME           An account NyxOS made (its home stays)
+  nyx-system person admin NAME on|off
+  nyx-system full-name USER 'FULL NAME'
+  nyx-system password USER                Reads the new password from stdin
   nyx-system groups                       The groups NyxOS manages here
   nyx-system group add|remove GROUP USER
   nyx-system apply JSON|-                 Typed changes (nyx-system-proto's Change
@@ -264,6 +269,22 @@ async fn run(args: &[&str]) -> Result<()> {
         ["power", key, action] => {
             let action = (*action != "default").then(|| action.to_string());
             apply(vec![Change::Power { key: key.to_string(), action }]).await?
+        }
+        ["person", "add", name, full_name, rest @ ..] if rest.iter().all(|a| *a == "--admin") => {
+            let admin = !rest.is_empty();
+            apply(vec![Change::AddPerson { name: name.to_string(), full_name: full_name.to_string(), admin }]).await?
+        }
+        ["person", "remove", name] => apply(vec![Change::RemovePerson { name: name.to_string() }]).await?,
+        ["person", "admin", name, state @ ("on" | "off")] => {
+            apply(vec![Change::PersonAdmin { name: name.to_string(), admin: *state == "on" }]).await?
+        }
+        ["full-name", user, full_name] => {
+            apply(vec![Change::FullName { user: user.to_string(), full_name: full_name.to_string() }]).await?
+        }
+        ["password", user] => {
+            let mut line = String::new();
+            std::io::stdin().read_line(&mut line)?;
+            proxy().await?.set_password(user, line.trim_end_matches(['\n', '\r'])).await?;
         }
         ["groups"] => {
             let s: SystemSettings = serde_json::from_str(&proxy().await?.settings().await?)?;

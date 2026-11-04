@@ -31,6 +31,11 @@ pub mod action {
     pub const FIREWALL: &str = "io.github.nyxos_project.system.firewall";
     /// Removing old generations and unused packages, and old system logs.
     pub const CLEAN: &str = "io.github.nyxos_project.system.clean";
+    /// Adding and removing people's accounts, their names and administrator rights, and
+    /// other people's passwords.
+    pub const ACCOUNTS: &str = "io.github.nyxos_project.system.accounts";
+    /// Changing your own password (asks for it).
+    pub const PASSWORD: &str = "io.github.nyxos_project.system.password";
 }
 
 /// System services the manager may turn on or off, with what each is.
@@ -108,6 +113,16 @@ impl Power {
     }
 }
 
+/// An account NyxOS made for someone.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct Person {
+    pub full_name: String,
+    /// In the wheel group: may make system changes.
+    #[serde(default)]
+    pub admin: bool,
+}
+
 /// The system layer's settings. Absent values leave the distribution's.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -143,6 +158,12 @@ pub struct SystemSettings {
     pub firewall: Firewall,
     #[serde(default, skip_serializing_if = "Power::is_empty")]
     pub power: Power,
+    /// Accounts NyxOS made, by login name.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub people: BTreeMap<String, Person>,
+    /// Full names of accounts declared elsewhere (the primary user's, from the host).
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub full_names: BTreeMap<String, String>,
 }
 
 fn version() -> u32 {
@@ -165,6 +186,8 @@ impl Default for SystemSettings {
             theme: Themes::default(),
             firewall: Firewall::default(),
             power: Power::default(),
+            people: BTreeMap::new(),
+            full_names: BTreeMap::new(),
         }
     }
 }
@@ -251,6 +274,23 @@ pub enum Change {
     HibernateDelay {
         seconds: Option<u32>,
     },
+    AddPerson {
+        name: String,
+        full_name: String,
+        admin: bool,
+    },
+    /// An account NyxOS made; its home folder stays.
+    RemovePerson {
+        name: String,
+    },
+    PersonAdmin {
+        name: String,
+        admin: bool,
+    },
+    FullName {
+        user: String,
+        full_name: String,
+    },
 }
 
 impl Change {
@@ -261,6 +301,9 @@ impl Change {
             Change::Service { .. } => action::SERVICES,
             Change::GroupMember { .. } => action::GROUPS,
             Change::Firewall { .. } | Change::FirewallPort { .. } => action::FIREWALL,
+            Change::AddPerson { .. } | Change::RemovePerson { .. } | Change::PersonAdmin { .. } | Change::FullName { .. } => {
+                action::ACCOUNTS
+            }
             _ => action::SETTINGS,
         }
     }
@@ -318,6 +361,20 @@ impl Change {
                 ensure!(seconds.is_none_or(|s| (60..=7 * 24 * 3600).contains(&s)), "between a minute and a week");
                 Ok(())
             }
+            Change::AddPerson { name, full_name, .. } => {
+                ensure!(valid_user(name) && !reserved_user(name), "not a login name a person can have: {name}");
+                ensure!(valid_full_name(full_name), "a name is up to 100 characters, without : or line breaks");
+                Ok(())
+            }
+            Change::RemovePerson { name } | Change::PersonAdmin { name, .. } => {
+                ensure!(valid_user(name), "not a valid user name: {name}");
+                Ok(())
+            }
+            Change::FullName { user, full_name } => {
+                ensure!(valid_user(user), "not a valid user name: {user}");
+                ensure!(valid_full_name(full_name), "a name is up to 100 characters, without : or line breaks");
+                Ok(())
+            }
         }
     }
 }
@@ -368,6 +425,31 @@ impl SystemSettings {
                     s.power.login.remove(key);
                 }
                 Change::HibernateDelay { seconds } => s.power.hibernate_delay = *seconds,
+                Change::AddPerson { name, full_name, admin } => {
+                    ensure!(!s.people.contains_key(name), "{name} already has an account");
+                    s.people.insert(name.clone(), Person { full_name: full_name.clone(), admin: *admin });
+                }
+                Change::RemovePerson { name } => {
+                    ensure!(
+                        s.people.remove(name).is_some(),
+                        "{name}'s account wasn't made by NyxOS, so it can't be removed here"
+                    );
+                    s.full_names.remove(name);
+                }
+                Change::PersonAdmin { name, admin } => match s.people.get_mut(name) {
+                    Some(p) => p.admin = *admin,
+                    None => bail!("{name}'s account wasn't made by NyxOS; its rights are set in this computer's configuration"),
+                },
+                Change::FullName { user, full_name } => match s.people.get_mut(user) {
+                    Some(p) => p.full_name = full_name.clone(),
+                    // An empty name gives it back to the configuration.
+                    None if full_name.is_empty() => {
+                        s.full_names.remove(user);
+                    }
+                    None => {
+                        s.full_names.insert(user.clone(), full_name.clone());
+                    }
+                },
                 Change::GroupMember { group, user, member } => {
                     let users = s.groups.entry(group.clone()).or_default();
                     if *member {
@@ -467,6 +549,18 @@ pub fn valid_user(u: &str) -> bool {
         && u.starts_with(|c: char| c.is_ascii_lowercase() || c == '_')
 }
 
+/// Names that aren't people's accounts.
+pub fn reserved_user(u: &str) -> bool {
+    matches!(u, "root" | "nobody" | "daemon" | "bin" | "sys" | "sshd" | "messagebus" | "polkituser" | "greeter" | "nixos")
+        || u.starts_with("nixbld")
+        || u.starts_with("systemd-")
+}
+
+/// A full name as `/etc/passwd`'s comment field takes it.
+pub fn valid_full_name(n: &str) -> bool {
+    n.chars().count() <= 100 && !n.contains([':', '\n', '\r', ','])
+}
+
 /// One system generation.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Generation {
@@ -504,6 +598,9 @@ pub trait System {
     fn collect_garbage(&self, older_than_days: u32) -> zbus::Result<String>;
     /// Shrink the system journal to this many megabytes.
     fn vacuum_journal(&self, megabytes: u32) -> zbus::Result<String>;
+    /// Set a person's password (asks for your own when it's yours, an administrator's
+    /// otherwise). Never stored in the configuration.
+    fn set_password(&self, user: &str, password: &str) -> zbus::Result<()>;
     /// A line of build or switch output.
     #[zbus(signal)]
     fn progress(&self, line: &str) -> zbus::Result<()>;
@@ -542,6 +639,17 @@ mod tests {
             .unwrap();
         assert!(s.firewall.tcp.contains(&8080) && s.power.login["HandleLidSwitch"] == "suspend-then-hibernate");
         assert_eq!(SystemSettings::parse(&serde_json::to_string(&s).unwrap()).unwrap(), s);
+        let s = s
+            .with(&[
+                Change::AddPerson { name: "ana".into(), full_name: "Ana Smith".into(), admin: false },
+                Change::PersonAdmin { name: "ana".into(), admin: true },
+                Change::FullName { user: "ken".into(), full_name: "Ken S.".into() },
+            ])
+            .unwrap();
+        assert!(s.people["ana"].admin && s.full_names["ken"] == "Ken S.");
+        assert!(s.with(&[Change::FullName { user: "ken".into(), full_name: String::new() }]).unwrap().full_names.is_empty());
+        assert!(s.with(&[Change::RemovePerson { name: "ken".into() }]).is_err());
+        assert!(s.with(&[Change::RemovePerson { name: "ana".into() }]).unwrap().people.is_empty());
         assert_eq!(s.services.get("printing"), Some(&true));
         let back = s
             .with(&[
@@ -572,6 +680,8 @@ mod tests {
             Change::Power { key: "KillUserProcesses".into(), action: Some("yes".into()) },
             Change::Power { key: "HandleLidSwitch".into(), action: Some("rm -rf".into()) },
             Change::HibernateDelay { seconds: Some(1) },
+            Change::AddPerson { name: "root".into(), full_name: "x".into(), admin: true },
+            Change::AddPerson { name: "ana".into(), full_name: "Ana:0:0".into(), admin: false },
             Change::Service { name: "sshd-root".into(), enabled: Some(true) },
         ] {
             assert!(bad.validate().is_err(), "{bad:?}");

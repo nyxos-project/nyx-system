@@ -157,17 +157,42 @@ impl Manager {
     }
 }
 
-/// People's accounts (uid 1000 to 59999 in /etc/passwd), the only ones a group is given to.
-fn people() -> Vec<String> {
+/// Accounts in /etc/passwd: name and uid.
+fn accounts() -> Vec<(String, u32)> {
     std::fs::read_to_string("/etc/passwd")
         .unwrap_or_default()
         .lines()
         .filter_map(|l| {
             let f: Vec<&str> = l.split(':').collect();
-            let uid: u32 = f.get(2)?.parse().ok()?;
-            (1000..60000).contains(&uid).then(|| f[0].to_string())
+            Some((f.first()?.to_string(), f.get(2)?.parse().ok()?))
         })
         .collect()
+}
+
+/// People's accounts (uid 1000 to 59999), the only ones a group is given to.
+fn people() -> Vec<String> {
+    accounts().into_iter().filter(|(_, uid)| (1000..60000).contains(uid)).map(|(n, _)| n).collect()
+}
+
+/// Accounts the NixOS configuration declares (the only ones it can rename).
+fn declared() -> Vec<String> {
+    std::fs::read_to_string("/var/lib/nixos/declarative-users").unwrap_or_default().split_whitespace().map(String::from).collect()
+}
+
+/// Checks against the running system that the changes themselves can't make.
+fn check_against_system(c: &Change) -> Result<(), String> {
+    match c {
+        Change::GroupMember { user, member: true, .. } if !people().contains(user) => {
+            Err(format!("{user} isn't a person's account on this computer"))
+        }
+        Change::AddPerson { name, .. } if accounts().iter().any(|(n, _)| n == name) => {
+            Err(format!("there's already an account called {name}"))
+        }
+        Change::FullName { user, .. } if !people().contains(user) || !declared().contains(user) => {
+            Err(format!("{user}'s name isn't one NyxOS's configuration sets"))
+        }
+        _ => Ok(()),
+    }
 }
 
 #[zbus::interface(name = "io.github.nyxos_project.System1")]
@@ -189,11 +214,7 @@ impl Manager {
         let changes: Vec<Change> = serde_json::from_str(changes).map_err(|e| fdo::Error::InvalidArgs(e.to_string()))?;
         for c in &changes {
             c.validate().map_err(|e| fdo::Error::InvalidArgs(e.to_string()))?;
-            if let Change::GroupMember { user, member: true, .. } = c
-                && !people().contains(user)
-            {
-                return Err(fdo::Error::InvalidArgs(format!("{user} isn't a person's account on this computer")));
-            }
+            check_against_system(c).map_err(fdo::Error::InvalidArgs)?;
         }
         let mut actions: Vec<&str> = changes.iter().map(Change::action).collect();
         actions.sort();
@@ -273,6 +294,46 @@ impl Manager {
         audit(uid, action::ROLLBACK, "rollback", result.as_ref().map(String::as_str).unwrap_or("failed"));
         self.touch();
         result.map_err(failed)
+    }
+
+    async fn set_password(
+        &self,
+        #[zbus(header)] header: Header<'_>,
+        #[zbus(connection)] conn: &Connection,
+        user: &str,
+        password: &str,
+    ) -> fdo::Result<()> {
+        self.touch();
+        let Some(&(_, target)) = accounts().iter().find(|(n, uid)| n == user && (1000..60000).contains(uid)) else {
+            return Err(fdo::Error::InvalidArgs(format!("{user} isn't a person's account on this computer")));
+        };
+        if password.is_empty() || password.len() > 512 || password.contains(['\n', '\r', '\0']) {
+            return Err(fdo::Error::InvalidArgs("a password is 1 to 512 characters on one line".into()));
+        }
+        let sender = header.sender().ok_or_else(|| fdo::Error::AccessDenied("no sender".into()))?.to_string();
+        let caller = fdo::DBusProxy::new(conn)
+            .await?
+            .get_connection_unix_user(zbus::names::BusName::try_from(sender.as_str()).map_err(failed)?)
+            .await?;
+        let act = if caller == target { action::PASSWORD } else { action::ACCOUNTS };
+        let uid = authorize(conn, &header, act).await?;
+        let mut child = tokio::process::Command::new("chpasswd")
+            .stdin(std::process::Stdio::piped())
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::piped())
+            .spawn()
+            .map_err(failed)?;
+        if let Some(mut stdin) = child.stdin.take() {
+            use tokio::io::AsyncWriteExt;
+            stdin.write_all(format!("{user}:{password}\n").as_bytes()).await.map_err(failed)?;
+        }
+        let out = child.wait_with_output().await.map_err(failed)?;
+        let ok = out.status.success();
+        audit(uid, act, &format!("password for {user}"), if ok { "done" } else { "failed" });
+        if !ok {
+            return Err(failed(String::from_utf8_lossy(&out.stderr).trim()));
+        }
+        Ok(())
     }
 
     async fn collect_garbage(
