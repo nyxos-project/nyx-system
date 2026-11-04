@@ -1,0 +1,22 @@
+[package]
+name = "nyx-system-cli"
+description = "nyx-system: the command line for the Nyx System Manager and the configuration layers"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+
+[[bin]]
+name = "nyx-system"
+path = "src/main.rs"
+
+[dependencies]
+nyx-config = { path = "../../crates/nyx-config" }
+nyx-system-proto = { path = "../../crates/nyx-system-proto", features = ["client"] }
+anyhow.workspace = true
+serde_json.workspace = true
+toml.workspace = true
+zbus.workspace = true
+tokio.workspace = true
+futures-util = "0.3"

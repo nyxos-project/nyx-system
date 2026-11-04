@@ -1,0 +1,17 @@
+[package]
+name = "nyx-system-proto"
+description = "The Nyx System Manager's settings, changes and D-Bus interface"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+
+[features]
+client = ["dep:zbus"]
+
+[dependencies]
+anyhow.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+zbus = { workspace = true, optional = true }

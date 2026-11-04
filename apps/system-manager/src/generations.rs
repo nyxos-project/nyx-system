@@ -1,0 +1,49 @@
+//! The system profile's generations, from its links.
+
+use anyhow::Result;
+use nyx_system_proto::Generation;
+use std::path::Path;
+
+const PROFILES: &str = "/nix/var/nix/profiles";
+
+/// `system-42-link` → 42.
+fn number(name: &str) -> Option<u32> {
+    name.strip_prefix("system-")?.strip_suffix("-link")?.parse().ok()
+}
+
+/// The generation the system profile points at.
+pub fn current() -> Option<u32> {
+    std::fs::read_link(Path::new(PROFILES).join("system")).ok()?.to_str().and_then(number)
+}
+
+/// Newest first.
+pub fn list() -> Result<Vec<Generation>> {
+    let current = current();
+    let mut out = Vec::new();
+    for entry in std::fs::read_dir(PROFILES)? {
+        let entry = entry?;
+        let Some(n) = entry.file_name().to_str().and_then(number) else { continue };
+        let created = entry
+            .path()
+            .symlink_metadata()
+            .ok()
+            .and_then(|m| m.modified().ok())
+            .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+            .map(|d| d.as_secs() as i64)
+            .unwrap_or(0);
+        let version = std::fs::read_to_string(entry.path().join("nixos-version")).unwrap_or_default().trim().to_string();
+        out.push(Generation { number: n, created, version, current: Some(n) == current });
+    }
+    out.sort_by_key(|g| std::cmp::Reverse(g.number));
+    Ok(out)
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn link_names() {
+        assert_eq!(super::number("system-42-link"), Some(42));
+        assert_eq!(super::number("system"), None);
+        assert_eq!(super::number("default-3-link"), None);
+    }
+}

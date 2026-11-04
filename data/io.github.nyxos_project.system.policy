@@ -1,0 +1,68 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE policyconfig PUBLIC "-//freedesktop//DTD PolicyKit Policy Configuration 1.0//EN"
+  "http://www.freedesktop.org/standards/PolicyKit/1/policyconfig.dtd">
+<!-- The Nyx System Manager's actions: each kind of system change is its own. -->
+<policyconfig>
+  <vendor>NyxOS</vendor>
+  <vendor_url>https://github.com/nyxos-project/nyx-system</vendor_url>
+
+  <action id="io.github.nyxos_project.system.settings">
+    <description>Change system settings</description>
+    <message>Authentication is required to change the computer's name, time zone, language, keyboard or themes</message>
+    <defaults>
+      <allow_any>no</allow_any>
+      <allow_inactive>no</allow_inactive>
+      <allow_active>auth_admin_keep</allow_active>
+    </defaults>
+  </action>
+
+  <action id="io.github.nyxos_project.system.packages">
+    <description>Install or remove software for everyone</description>
+    <message>Authentication is required to install or remove software for every user</message>
+    <defaults>
+      <allow_any>no</allow_any>
+      <allow_inactive>no</allow_inactive>
+      <allow_active>auth_admin_keep</allow_active>
+    </defaults>
+  </action>
+
+  <action id="io.github.nyxos_project.system.services">
+    <description>Turn system services on or off</description>
+    <message>Authentication is required to turn system services on or off</message>
+    <defaults>
+      <allow_any>no</allow_any>
+      <allow_inactive>no</allow_inactive>
+      <allow_active>auth_admin_keep</allow_active>
+    </defaults>
+  </action>
+
+  <action id="io.github.nyxos_project.system.defaults">
+    <description>Change every user's defaults</description>
+    <message>Authentication is required to change the defaults every user starts with</message>
+    <defaults>
+      <allow_any>no</allow_any>
+      <allow_inactive>no</allow_inactive>
+      <allow_active>auth_admin_keep</allow_active>
+    </defaults>
+  </action>
+
+  <action id="io.github.nyxos_project.system.update">
+    <description>Update the system</description>
+    <message>Authentication is required to update NyxOS</message>
+    <defaults>
+      <allow_any>no</allow_any>
+      <allow_inactive>no</allow_inactive>
+      <allow_active>auth_admin_keep</allow_active>
+    </defaults>
+  </action>
+
+  <action id="io.github.nyxos_project.system.rollback">
+    <description>Go back to an earlier system</description>
+    <message>Authentication is required to go back to the previous version of the system</message>
+    <defaults>
+      <allow_any>no</allow_any>
+      <allow_inactive>no</allow_inactive>
+      <allow_active>auth_admin_keep</allow_active>
+    </defaults>
+  </action>
+</policyconfig>

@@ -1,0 +1,21 @@
+[package]
+name = "nyx-system-manager"
+description = "The Nyx System Manager: validated, authorized NixOS configuration changes, activation, updates and rollback"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+
+[dependencies]
+nyx-config = { path = "../../crates/nyx-config" }
+nyx-system-proto = { path = "../../crates/nyx-system-proto" }
+anyhow.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+toml.workspace = true
+zbus.workspace = true
+tokio.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true
