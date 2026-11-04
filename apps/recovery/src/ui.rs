@@ -187,7 +187,14 @@ impl App {
                 items.push(item("Show the system settings", Act::ShowSettings));
                 let snaps = system::snapshots();
                 if !snaps.is_empty() {
-                    items.push(item(format!("Btrfs snapshots ({} filesystems)", snaps.len()), Act::Snapshots));
+                    items.push(item(
+                        format!(
+                            "Btrfs snapshots ({} {})",
+                            snaps.len(),
+                            if snaps.len() == 1 { "filesystem" } else { "filesystems" }
+                        ),
+                        Act::Snapshots,
+                    ));
                 }
                 items.push(item("Rebuild the system from its settings (offline)", Act::Rebuild));
                 items.push(item("Reset the system settings to the defaults, then rebuild", Act::ResetSettings));
@@ -721,8 +728,10 @@ fn centered(area: Rect, width: u16, height: u16) -> Rect {
 
 fn shell(terminal: &mut DefaultTerminal) {
     ratatui::restore();
+    // A text console has no alternate screen: clear what the menus drew.
+    print!("\x1b[2J\x1b[H");
     println!("A root shell. Type exit to go back to NyxOS Recovery.");
-    let _ = std::process::Command::new("bash").arg("--login").status();
+    let _ = std::process::Command::new("bash").args(["--login", "-i"]).status();
     *terminal = ratatui::init();
 }
 
