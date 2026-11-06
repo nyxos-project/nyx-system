@@ -858,6 +858,7 @@ dependencies = [
  "anyhow",
  "nyx-system-proto",
  "serde",
+ "serde_json",
  "toml",
 ]
 

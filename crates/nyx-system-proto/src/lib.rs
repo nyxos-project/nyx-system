@@ -721,6 +721,9 @@ pub trait System {
     fn reset_default(&self, domain: &str, key: &str) -> zbus::Result<()>;
     /// Update the system's inputs (NyxOS, nixpkgs, Nyx apps) and switch to the result.
     fn update(&self) -> zbus::Result<String>;
+    /// [`apply`](Self::apply), then [`update`](Self::update), with one authorization
+    /// for both. Empty `changes` (`[]`) only updates.
+    fn apply_and_update(&self, changes: &str) -> zbus::Result<String>;
     /// The system generations (JSON [`Generation`]s), newest first.
     fn generations(&self) -> zbus::Result<String>;
     /// Switch back to the generation before the current one.

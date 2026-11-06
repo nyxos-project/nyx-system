@@ -148,6 +148,9 @@ async fn catalog(args: &[&str]) -> Result<()> {
             for f in &plan.flatpaks {
                 println!("  flathub {f} (for you)");
             }
+            for f in &plan.profiles {
+                println!("  nix profile {f} (for you)");
+            }
             for consent in &plan.consent {
                 println!("! {}", consent.describe());
             }
@@ -159,6 +162,7 @@ async fn catalog(args: &[&str]) -> Result<()> {
                 println!("{}", with_progress(&p, p.apply(&json)).await?);
             }
             nyx_catalog::flatpak(&plan.flatpaks, true, |l| eprintln!("{l}"))?;
+            nyx_catalog::nix_profile(&plan.profiles, true, |l| eprintln!("{l}"))?;
         }
         ["remove", ids @ ..] if !ids.is_empty() => {
             let p = proxy().await?;
@@ -173,6 +177,7 @@ async fn catalog(args: &[&str]) -> Result<()> {
                 println!("{}", with_progress(&p, p.apply(&json)).await?);
             }
             nyx_catalog::flatpak(&plan.flatpaks, false, |l| eprintln!("{l}"))?;
+            nyx_catalog::nix_profile(&plan.profiles, false, |l| eprintln!("{l}"))?;
         }
         _ => bail!("see nyx-system --help"),
     }

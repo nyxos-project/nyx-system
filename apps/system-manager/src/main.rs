@@ -156,6 +156,51 @@ impl Manager {
     fn touch(&self) {
         *self.last_use.lock().unwrap() = Instant::now();
     }
+
+    /// Build and switch to `changes`, already authorized for `actions`.
+    async fn apply_changes(
+        &self,
+        uid: u32,
+        changes: &[Change],
+        actions: &[&str],
+        emitter: &SignalEmitter<'_>,
+    ) -> anyhow::Result<String> {
+        let summary = serde_json::to_string(changes).unwrap_or_default();
+        let result = rebuild::apply(&self.config, changes, emitter).await;
+        if result.is_ok() {
+            for c in changes {
+                if let Change::RemoveMount { id } = c {
+                    let _ = std::fs::remove_file(std::path::Path::new(nyx_system_proto::MOUNT_LOGINS).join(id));
+                }
+            }
+        }
+        audit(uid, &actions.join(","), &summary, result.as_ref().map(String::as_str).unwrap_or("failed"));
+        result
+    }
+}
+
+/// A client's JSON changes, validated, with what the computer has found by the manager
+/// itself (never taken from a client).
+fn checked_changes(json: &str) -> fdo::Result<Vec<Change>> {
+    let mut changes: Vec<Change> = serde_json::from_str(json).map_err(|e| fdo::Error::InvalidArgs(e.to_string()))?;
+    for c in &mut changes {
+        if let Change::Hardware { hardware } = c {
+            *hardware = nyx_system_proto::hardware::detect(std::path::Path::new("/"));
+        }
+    }
+    for c in &changes {
+        c.validate().map_err(|e| fdo::Error::InvalidArgs(e.to_string()))?;
+        check_against_system(c).map_err(fdo::Error::InvalidArgs)?;
+    }
+    Ok(changes)
+}
+
+/// The polkit actions `changes` need, each once.
+fn actions_for(changes: &[Change]) -> Vec<&'static str> {
+    let mut actions: Vec<&str> = changes.iter().map(Change::action).collect();
+    actions.sort();
+    actions.dedup();
+    actions
 }
 
 /// Accounts in /etc/passwd: name, uid and shell.
@@ -249,34 +294,38 @@ impl Manager {
         changes: &str,
     ) -> fdo::Result<String> {
         self.touch();
-        let mut changes: Vec<Change> = serde_json::from_str(changes).map_err(|e| fdo::Error::InvalidArgs(e.to_string()))?;
-        // What the computer has is the manager's own finding, never a client's.
-        for c in &mut changes {
-            if let Change::Hardware { hardware } = c {
-                *hardware = nyx_system_proto::hardware::detect(std::path::Path::new("/"));
-            }
-        }
-        for c in &changes {
-            c.validate().map_err(|e| fdo::Error::InvalidArgs(e.to_string()))?;
-            check_against_system(c).map_err(fdo::Error::InvalidArgs)?;
-        }
-        let mut actions: Vec<&str> = changes.iter().map(Change::action).collect();
-        actions.sort();
-        actions.dedup();
+        let changes = checked_changes(changes)?;
+        let actions = actions_for(&changes);
         let uid = authorize_all(conn, &header, &actions).await?;
         let _guard = self.busy.try_lock().map_err(|_| failed("another system change is running"))?;
-        let summary = serde_json::to_string(&changes).unwrap_or_default();
-        let result = rebuild::apply(&self.config, &changes, &emitter).await;
-        if result.is_ok() {
-            for c in &changes {
-                if let Change::RemoveMount { id } = c {
-                    let _ = std::fs::remove_file(std::path::Path::new(nyx_system_proto::MOUNT_LOGINS).join(id));
-                }
-            }
-        }
-        audit(uid, &actions.join(","), &summary, result.as_ref().map(String::as_str).unwrap_or("failed"));
+        let result = self.apply_changes(uid, &changes, &actions, &emitter).await;
         self.touch();
         result.map_err(failed)
+    }
+
+    async fn apply_and_update(
+        &self,
+        #[zbus(header)] header: Header<'_>,
+        #[zbus(connection)] conn: &Connection,
+        #[zbus(signal_emitter)] emitter: SignalEmitter<'_>,
+        changes: &str,
+    ) -> fdo::Result<String> {
+        self.touch();
+        let changes = checked_changes(changes)?;
+        let mut actions = actions_for(&changes);
+        actions.push(action::UPDATE);
+        let uid = authorize_all(conn, &header, &actions).await?;
+        let _guard = self.busy.try_lock().map_err(|_| failed("another system change is running"))?;
+        let mut summary = Vec::new();
+        if !changes.is_empty() {
+            actions.pop();
+            summary.push(self.apply_changes(uid, &changes, &actions, &emitter).await.map_err(failed)?);
+        }
+        let result = rebuild::update(&self.config, &emitter).await;
+        audit(uid, action::UPDATE, "update", result.as_ref().map(String::as_str).unwrap_or("failed"));
+        self.touch();
+        summary.push(result.map_err(failed)?);
+        Ok(summary.join("\n"))
     }
 
     async fn set_default(

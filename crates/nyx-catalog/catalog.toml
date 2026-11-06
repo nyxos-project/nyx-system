@@ -3,7 +3,8 @@
 # tier: "base" is preinstalled, "welcome" is offered in Welcome (and the Store), "store"
 # only in the Store. An item installs any of: nixpkgs `packages` (for everyone, through
 # the System Manager), `nyx` apps (nyx.<name>.enable), a Flathub `flatpak` (for the
-# user), and turns on `services`. `groups` are joined by the user who asks, only after
+# user), a flake for the user's Nix `profile` (`nix profile add`, for tools nixpkgs
+# doesn't have; it needs a `bin`), and turns on `services`. `groups` are joined by the user who asks, only after
 # they agree; `unfree` items need their license accepted. `bin` is a command that shows
 # the item is already installed, however it got there.
 
@@ -1084,6 +1085,36 @@ packages = ["gemini-cli"]
 bin = "gemini"
 
 [[item]]
+id = "cursor-agent"
+name = "Cursor Agent"
+summary = "Cursor's coding agent, in the terminal."
+category = "coding-agents"
+tier = "welcome"
+packages = ["cursor-cli"]
+unfree = true
+bin = "cursor-agent"
+
+[[item]]
+id = "grok-build"
+name = "Grok Build"
+summary = "xAI's coding agent."
+category = "coding-agents"
+tier = "welcome"
+packages = ["grok-build"]
+unfree = true
+bin = "grok"
+
+[[item]]
+id = "crush"
+name = "Crush"
+summary = "Charm's coding agent for any model."
+category = "coding-agents"
+tier = "welcome"
+packages = ["crush"]
+unfree = true
+bin = "crush"
+
+[[item]]
 id = "opencode"
 name = "OpenCode"
 summary = "An open-source coding agent for any model."
@@ -1093,13 +1124,14 @@ packages = ["opencode"]
 bin = "opencode"
 
 [[item]]
-id = "pi"
-name = "Pi"
-summary = "A minimal, extensible coding agent."
+id = "oh-my-pi"
+name = "oh-my-pi"
+summary = "Pi, the extensible coding agent, with batteries included."
 category = "coding-agents"
 tier = "welcome"
-packages = ["pi-coding-agent"]
-bin = "pi"
+profile = "github:can1357/oh-my-pi"
+bin = "omp"
+note = "Installed for you from its own flake, not from nixpkgs."
 
 [[item]]
 id = "ollama"
@@ -1138,7 +1170,7 @@ items = ["zed", "vscodium", "nyx-git", "gh", "lazygit", "neovim", "direnv", "jus
 id = "ai-developer"
 name = "AI Developer"
 summary = "Coding agents and local models, with Python and Node.js."
-items = ["codex", "claude-code", "gemini-cli", "opencode", "pi", "ollama", "llama-cpp", "python", "node", "nyx-assistant", "nyx-chat", "zed"]
+items = ["codex", "claude-code", "gemini-cli", "opencode", "oh-my-pi", "ollama", "llama-cpp", "python", "node", "nyx-assistant", "nyx-chat", "zed"]
 
 [[preset]]
 id = "homelab"

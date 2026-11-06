@@ -11,4 +11,5 @@ repository.workspace = true
 nyx-system-proto = { path = "../nyx-system-proto" }
 anyhow.workspace = true
 serde.workspace = true
+serde_json.workspace = true
 toml.workspace = true

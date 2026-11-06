@@ -64,6 +64,10 @@ pub struct Item {
     /// A Flathub app, installed for the user.
     #[serde(default)]
     pub flatpak: Option<String>,
+    /// A flake installed into the user's Nix profile (`nix profile add`), for tools
+    /// nixpkgs doesn't have.
+    #[serde(default)]
+    pub profile: Option<String>,
     /// System services it turns on.
     #[serde(default)]
     pub services: Vec<String>,
@@ -130,6 +134,8 @@ pub struct Plan {
     pub changes: Vec<Change>,
     /// Flathub apps for the user.
     pub flatpaks: Vec<String>,
+    /// Flakes for the user's Nix profile.
+    pub profiles: Vec<String>,
     pub consent: Vec<Consent>,
 }
 
@@ -140,7 +146,7 @@ impl Plan {
     }
 
     pub fn is_empty(&self) -> bool {
-        self.changes.is_empty() && self.flatpaks.is_empty()
+        self.changes.is_empty() && self.flatpaks.is_empty() && self.profiles.is_empty()
     }
 }
 
@@ -179,10 +185,18 @@ impl Catalog {
             ensure!(ids.insert(format!("i:{}", i.id)), "item {} is listed twice", i.id);
             ensure!(self.categories.iter().any(|c| c.id == i.category), "item {} is in no category ({})", i.id, i.category);
             ensure!(
-                !i.packages.is_empty() || !i.nyx.is_empty() || i.flatpak.is_some() || !i.services.is_empty(),
+                !i.packages.is_empty()
+                    || !i.nyx.is_empty()
+                    || i.flatpak.is_some()
+                    || i.profile.is_some()
+                    || !i.services.is_empty(),
                 "item {} installs nothing",
                 i.id
             );
+            if let Some(f) = &i.profile {
+                ensure!(valid_flake_ref(f), "item {}: not a flake reference Nyx installs from: {f}", i.id);
+                ensure!(i.bin.is_some(), "item {} comes from a flake but names no command", i.id);
+            }
             for p in &i.packages {
                 ensure!(valid_package(p), "item {}: not a nixpkgs attribute: {p}", i.id);
             }
@@ -199,11 +213,12 @@ impl Catalog {
                 ensure!(GROUPS.iter().any(|(n, _)| n == g), "item {}: not a group the System Manager has: {g}", i.id);
             }
             ensure!(
-                !i.unfree || !i.packages.is_empty() || i.flatpak.is_some(),
+                !i.unfree || !i.packages.is_empty() || i.flatpak.is_some() || i.profile.is_some(),
                 "item {} is unfree but installs no package",
                 i.id
             );
             ensure!(i.tier != Tier::Base || i.flatpak.is_none(), "base item {} can't come from Flathub", i.id);
+            ensure!(i.tier != Tier::Base || i.profile.is_none(), "base item {} can't come from a flake", i.id);
         }
         for p in &self.presets {
             ensure!(ids.insert(format!("p:{}", p.id)), "preset {} is listed twice", p.id);
@@ -280,6 +295,11 @@ impl Catalog {
             {
                 plan.flatpaks.push(f.clone());
             }
+            if let Some(f) = &i.profile
+                && !plan.profiles.contains(f)
+            {
+                plan.profiles.push(f.clone());
+            }
             for s in &i.services {
                 if have.settings.services.get(s) != Some(&true) && services.insert(s.clone()) {
                     let what = SERVICES.iter().find(|(n, _)| n == s).map(|(_, w)| w.to_string()).unwrap_or_default();
@@ -327,6 +347,11 @@ impl Catalog {
             {
                 plan.flatpaks.push(f.clone());
             }
+            if let Some(f) = &i.profile
+                && have.profiles.contains(f)
+            {
+                plan.profiles.push(f.clone());
+            }
         }
         packages.sort();
         packages.dedup();
@@ -349,6 +374,8 @@ pub struct Installed {
     pub nyx_apps: BTreeSet<String>,
     /// Flathub apps, the user's and the system's.
     pub flatpaks: BTreeSet<String>,
+    /// Flakes in the user's Nix profile, as they were added.
+    pub profiles: BTreeSet<String>,
     /// Commands on the system's and the user's paths.
     pub bins: BTreeSet<String>,
 }
@@ -371,16 +398,19 @@ impl Installed {
         let mut bins = BTreeSet::new();
         let user = std::env::var("USER").unwrap_or_default();
         let home = std::env::var("HOME").unwrap_or_default();
+        let state = std::env::var("XDG_STATE_HOME").unwrap_or_else(|_| format!("{home}/.local/state"));
         for dir in [
             "/run/current-system/sw/bin".to_string(),
             format!("/etc/profiles/per-user/{user}/bin"),
             format!("{home}/.nix-profile/bin"),
+            format!("{state}/nix/profile/bin"),
         ] {
             if let Ok(entries) = std::fs::read_dir(dir) {
                 bins.extend(entries.flatten().map(|e| e.file_name().to_string_lossy().into_owned()));
             }
         }
-        Installed { settings, nyx_apps, flatpaks, bins }
+        let profiles = profile_elements().into_values().collect();
+        Installed { settings, nyx_apps, flatpaks, profiles, bins }
     }
 
     /// Whether `item` is installed.
@@ -390,6 +420,9 @@ impl Installed {
         }
         if let Some(f) = &item.flatpak {
             return self.flatpaks.contains(f);
+        }
+        if item.profile.as_ref().is_some_and(|f| self.profiles.contains(f)) {
+            return true;
         }
         if item.bin.as_ref().is_some_and(|b| self.bins.contains(b)) {
             return true;
@@ -458,6 +491,76 @@ pub fn flatpak(apps: &[String], install: bool, mut line: impl FnMut(&str)) -> Re
         ensure!(status.success(), "flatpak {} failed: {}", args[0], errors.last().cloned().unwrap_or_default());
     }
     Ok(())
+}
+
+/// The user's Nix profile: each element's name and the flake it was added from.
+pub fn profile_elements() -> BTreeMap<String, String> {
+    #[derive(Deserialize)]
+    struct List {
+        #[serde(default)]
+        elements: BTreeMap<String, Element>,
+    }
+    #[derive(Deserialize)]
+    struct Element {
+        #[serde(rename = "originalUrl")]
+        original_url: Option<String>,
+    }
+    let Ok(out) = std::process::Command::new("nix").args(["profile", "list", "--json"]).output() else {
+        return BTreeMap::new();
+    };
+    let Ok(list) = serde_json::from_slice::<List>(&out.stdout) else { return BTreeMap::new() };
+    list.elements.into_iter().filter_map(|(name, e)| Some((name, e.original_url?))).collect()
+}
+
+/// Add flakes to the user's Nix profile, or remove them. `line` gets nix's output.
+pub fn nix_profile(refs: &[String], install: bool, mut line: impl FnMut(&str)) -> Result<()> {
+    use std::io::{BufRead, BufReader};
+    use std::process::{Command, Stdio};
+    for r in refs {
+        ensure!(valid_flake_ref(r), "not a flake reference Nyx installs from: {r}");
+    }
+    let mut runs: Vec<Vec<String>> = Vec::new();
+    if install {
+        runs.extend(refs.iter().map(|r| vec!["add".to_string(), r.clone()]));
+    } else {
+        let names: Vec<String> =
+            profile_elements().into_iter().filter(|(_, url)| refs.contains(url)).map(|(name, _)| name).collect();
+        if !names.is_empty() {
+            runs.push([vec!["remove".to_string()], names].concat());
+        }
+    }
+    for args in runs {
+        let mut child = Command::new("nix")
+            .arg("profile")
+            .args(&args)
+            .stdout(Stdio::null())
+            .stderr(Stdio::piped())
+            .spawn()
+            .context("nix profile")?;
+        let mut last = String::new();
+        if let Some(err) = child.stderr.take() {
+            for l in BufReader::new(err).lines().map_while(Result::ok) {
+                if l.trim_start().starts_with("error:") {
+                    last = l.trim().to_string();
+                }
+                line(&l);
+            }
+        }
+        ensure!(child.wait()?.success(), "nix profile {} failed: {last}", args[0]);
+    }
+    Ok(())
+}
+
+/// `github:owner/repo`, optionally with a ref (`/v1.2`) and an output (`#name`).
+pub fn valid_flake_ref(r: &str) -> bool {
+    let Some(rest) = ["github:", "gitlab:", "sourcehut:"].iter().find_map(|p| r.strip_prefix(p)) else { return false };
+    let (path, output) = rest.split_once('#').unwrap_or((rest, ""));
+    let parts: Vec<&str> = path.split('/').collect();
+    let ok = |s: &str| !s.is_empty() && s.bytes().all(|b| b.is_ascii_alphanumeric() || b"._-~".contains(&b));
+    r.len() <= 200
+        && (2..=3).contains(&parts.len())
+        && parts.iter().all(|p| ok(p) && !p.starts_with('.'))
+        && (output.is_empty() || ok(output))
 }
 
 /// `com.valvesoftware.Steam`.
@@ -538,6 +641,25 @@ mod tests {
                 Change::NyxApp { name: "mail".into(), enabled: Some(false) },
             ]
         );
+    }
+
+    #[test]
+    fn flake_items_go_to_the_users_profile() {
+        let c = catalog();
+        let pick: BTreeSet<String> = ["oh-my-pi"].map(String::from).into();
+        let plan = c.plan(&pick, "ken", &Installed::default()).unwrap();
+        assert!(plan.changes.is_empty() && !plan.rebuilds());
+        assert_eq!(plan.profiles, vec!["github:can1357/oh-my-pi".to_string()]);
+        let mut have = Installed::default();
+        have.profiles.insert("github:can1357/oh-my-pi".into());
+        assert!(c.plan(&pick, "ken", &have).unwrap().is_empty());
+        assert_eq!(c.removal(&pick, &have).unwrap().profiles, plan.profiles);
+        for good in ["github:can1357/oh-my-pi", "github:a/b/v1.2", "gitlab:a/b#pkg"] {
+            assert!(valid_flake_ref(good), "{good}");
+        }
+        for bad in ["github:a", "path:/etc", "github:a/b?dir=x", "github:../b", "https://x/y", "github:a/b#x y"] {
+            assert!(!valid_flake_ref(bad), "{bad}");
+        }
     }
 
     #[test]
