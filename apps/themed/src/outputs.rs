@@ -202,6 +202,42 @@ fn hyprlock(theme: &Theme, appearance: &toml::Table) -> Result<()> {
     Ok(())
 }
 
+/// The theme's colours as an Umbra palette (umbra-icons' `--palette` file).
+pub fn umbra_palette(theme: &Theme) -> String {
+    let p = &theme.palette;
+    let c = |colour: &str, fallback: &str| format!("#{}", hex(colour).unwrap_or_else(|| fallback.into()));
+    let swatches: Vec<String> = ["blue", "violet", "pink", "red", "coral", "amber", "green", "teal", "graphite"]
+        .iter()
+        .map(|n| format!("\"{n}\": \"#{}\"", swatch(theme, n, &p.accent)))
+        .collect();
+    format!(
+        "{{\n  \"name\": {name:?},\n  \"light\": {light},\n  \"bg\": \"{bg}\",\n  \"text\": \"{text}\",\n  \"accent\": \"{accent}\",\n  \"swatches\": {{ {swatches} }}\n}}\n",
+        name = theme.name,
+        light = p.light,
+        bg = c(&p.bg, "09090a"),
+        text = c(&p.text, "e8e8ea"),
+        accent = c(&p.accent, "5b9cff"),
+        swatches = swatches.join(", "),
+    )
+}
+
+/// Umbra redrawn in the theme's colours for this person (`~/.local/share/icons`, ahead
+/// of the system's Nyx Dark copy), when the colours change. Without umbra-icons, nothing.
+fn icons(theme: &Theme) -> Result<()> {
+    let palette = xdg("XDG_STATE_HOME", ".local/state").join("nyx/umbra-palette.json");
+    let out = xdg("XDG_DATA_HOME", ".local/share").join("icons");
+    let changed = write_if_changed(&palette, &umbra_palette(theme))?;
+    if !changed && out.join("Umbra/index.theme").exists() {
+        return Ok(());
+    }
+    let mut cmd = Command::new("umbra-icons");
+    cmd.args(["build", "--out"]).arg(&out).arg("--palette").arg(&palette);
+    match quiet(&mut cmd) {
+        Err(e) if e.downcast_ref::<std::io::Error>().is_some_and(|e| e.kind() == std::io::ErrorKind::NotFound) => Ok(()),
+        other => other,
+    }
+}
+
 pub fn write_all(theme: &Theme, appearance: &toml::Table) -> Vec<(&'static str, Result<()>)> {
     vec![
         ("Hyprland", hyprland(theme)),
@@ -209,6 +245,7 @@ pub fn write_all(theme: &Theme, appearance: &toml::Table) -> Vec<(&'static str, 
         ("GTK", gtk(theme)),
         ("wallpaper", wallpaper(theme, appearance)),
         ("lock screen", hyprlock(theme, appearance)),
+        ("icons", icons(theme)),
     ]
 }
 
@@ -233,6 +270,9 @@ mod tests {
         assert!(lock.contains("$nyx_accent = rgb(") && lock.contains("$nyx_wallpaper = /w/a.jpg"));
         let ini = foot_ini(&theme);
         assert!(ini.contains("[colors-dark]") && ini.contains("regular4=") && ini.contains("bright7="));
+        let umbra: serde_json::Value = serde_json::from_str(&umbra_palette(&theme)).unwrap();
+        assert!(umbra["bg"].as_str().is_some_and(|b| b.starts_with('#') && b.len() == 7));
+        assert_eq!(umbra["swatches"].as_object().map(|s| s.len()), Some(9));
     }
 
     #[test]

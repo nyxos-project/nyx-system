@@ -7,7 +7,8 @@
 //!   the terminal's palette);
 //! - GTK's light or dark preference;
 //! - the wallpaper: the user's own (`appearance.toml`'s `wallpaper`), else the theme's
-//!   default from the Nyx wallpapers, shown by `nyx-wallpaper.service`.
+//!   default from the Nyx wallpapers, shown by `nyx-wallpaper.service`;
+//! - the Umbra icons, redrawn in the theme's colours (`~/.local/share/icons`).
 //!
 //! `--once` writes everything and exits; without it, it also follows changes.
 

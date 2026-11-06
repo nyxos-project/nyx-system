@@ -958,6 +958,7 @@ dependencies = [
  "notify",
  "nyx-config",
  "nyx-theme",
+ "serde_json",
  "tempfile",
  "toml",
 ]
