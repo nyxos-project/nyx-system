@@ -161,6 +161,11 @@ name = "Coding agents"
 section = "agents"
 
 [[category]]
+id = "agent-apps"
+name = "Agent apps"
+section = "agents"
+
+[[category]]
 id = "local-models"
 name = "Local models"
 section = "agents"
@@ -541,6 +546,26 @@ category = "editors"
 tier = "welcome"
 packages = ["zed-editor"]
 bin = "zeditor"
+
+[[item]]
+id = "cursor"
+name = "Cursor"
+summary = "The AI code editor, built on VS Code."
+category = "editors"
+tier = "welcome"
+packages = ["code-cursor"]
+unfree = true
+bin = "cursor"
+
+[[item]]
+id = "antigravity-ide"
+name = "Antigravity IDE"
+summary = "Google's agent-first code editor."
+category = "editors"
+tier = "welcome"
+packages = ["antigravity-ide"]
+unfree = true
+bin = "antigravity-ide"
 
 [[item]]
 id = "gimp"
@@ -1133,6 +1158,36 @@ tier = "welcome"
 profile = "github:can1357/oh-my-pi"
 bin = "omp"
 note = "Installed for you from its own flake, not from nixpkgs."
+
+[[item]]
+id = "antigravity-app"
+name = "Google Antigravity"
+summary = "Google's desktop app for running agents across your projects."
+category = "agent-apps"
+tier = "welcome"
+packages = ["antigravity-app"]
+unfree = true
+bin = "antigravity-app"
+
+[[item]]
+id = "chatgpt-desktop"
+name = "ChatGPT"
+summary = "OpenAI's desktop app, with Codex."
+category = "agent-apps"
+tier = "welcome"
+packages = ["chatgpt-desktop"]
+unfree = true
+bin = "chatgpt-desktop"
+
+[[item]]
+id = "herdr-app"
+name = "Herdr"
+summary = "A desktop app for terminals and coding agents; they keep running when you close it."
+category = "agent-apps"
+tier = "welcome"
+packages = ["herdr-app"]
+bin = "herdr-app"
+note = "The desktop app, apart from the Herdr terminal multiplexer NyxOS includes."
 
 [[item]]
 id = "ollama"
