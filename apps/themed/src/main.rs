@@ -46,7 +46,10 @@ fn main() -> Result<()> {
     std::fs::create_dir_all(&dir)?;
     let (tx, rx) = std::sync::mpsc::channel();
     let mut watcher = notify::recommended_watcher(move |e: notify::Result<notify::Event>| {
+        // Reading the files (as this service and every Nyx app does) is no change; reacting
+        // to it would apply the theme over and over.
         if let Ok(e) = e
+            && !matches!(e.kind, notify::EventKind::Access(_))
             && e.paths.iter().any(|p| p.file_name().is_some_and(|n| n == "theme.toml" || n == "appearance.toml"))
         {
             let _ = tx.send(());
