@@ -126,7 +126,24 @@ pub async fn rollback(config: &Config, emitter: &SignalEmitter<'_>) -> Result<St
     if let Ok(text) = std::fs::read_to_string(saved) {
         config.write_settings(&nyx_system_proto::SystemSettings::parse(&text)?)?;
     }
+    // And its versions: otherwise the next change would bring the newer channel or tools
+    // back.
+    restore_versions(config, &Path::new(&format!("{PROFILE}-{previous}-link")).join("etc/nyxos/built-from"))?;
     Ok(format!("Back on generation {previous}"))
+}
+
+/// Put back the flake.lock and tool pins a generation was built from (`built-from`),
+/// when it carries them.
+fn restore_versions(config: &Config, built_from: &Path) -> Result<()> {
+    let Ok(lock) = std::fs::read(built_from.join("flake.lock")) else { return Ok(()) };
+    std::fs::write(config.flake.join("flake.lock"), lock)?;
+    let tools = config.overrides.join("tools.json");
+    match std::fs::read(built_from.join("tools.json")) {
+        Ok(pins) => std::fs::write(&tools, pins)?,
+        Err(_) if tools.exists() => std::fs::remove_file(&tools)?,
+        Err(_) => {}
+    }
+    Ok(())
 }
 
 /// Remove system generations older than `days` (never the current one) and whatever
@@ -151,4 +168,37 @@ pub async fn vacuum_journal(config: &Config, megabytes: u32, emitter: &SignalEmi
     anyhow::ensure!((50..=100_000).contains(&megabytes), "keep between 50 MB and 100 GB of logs");
     run(emitter, &config.state, "journalctl", &[&format!("--vacuum-size={megabytes}M")]).await?;
     Ok(format!("The system log is at most {megabytes} MB"))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn going_back_puts_the_versions_back() {
+        let dir = tempfile::tempdir().unwrap();
+        let config = Config {
+            flake: dir.path().join("flake"),
+            host: "h".into(),
+            overrides: dir.path().join("overrides"),
+            state: dir.path().join("state"),
+        };
+        let built_from = dir.path().join("gen/etc/nyxos/built-from");
+        for d in [&config.flake, &config.overrides, &built_from] {
+            std::fs::create_dir_all(d).unwrap();
+        }
+        std::fs::write(config.flake.join("flake.lock"), "new").unwrap();
+        std::fs::write(config.overrides.join("tools.json"), "{\"claude-code\": {}}").unwrap();
+        // A generation that carries nothing leaves things as they are.
+        restore_versions(&config, &dir.path().join("none")).unwrap();
+        assert!(config.overrides.join("tools.json").exists());
+        // One built from the channel's pins alone.
+        std::fs::write(built_from.join("flake.lock"), "old").unwrap();
+        restore_versions(&config, &built_from).unwrap();
+        assert_eq!(std::fs::read_to_string(config.flake.join("flake.lock")).unwrap(), "old");
+        assert!(!config.overrides.join("tools.json").exists());
+        std::fs::write(built_from.join("tools.json"), "{\"codex\": {}}").unwrap();
+        restore_versions(&config, &built_from).unwrap();
+        assert_eq!(std::fs::read_to_string(config.overrides.join("tools.json")).unwrap(), "{\"codex\": {}}");
+    }
 }

@@ -409,6 +409,31 @@ pub fn resolve(targets: &[Target], names: &[&str]) -> Result<Vec<Pick>> {
     Ok(picks)
 }
 
+/// [`resolve`], saying so when a name is a tool NyxOS packages that isn't installed here.
+pub fn resolve_installed(s: &Snapshot, targets: &[Target], names: &[&str]) -> Result<Vec<Pick>> {
+    if names.is_empty() {
+        return resolve(targets, names);
+    }
+    let mut picks = Vec::new();
+    for name in names {
+        match resolve(targets, &[name]) {
+            Ok(p) => picks.extend(p),
+            Err(e) => {
+                let n = name.to_lowercase();
+                let missing = s
+                    .tools
+                    .iter()
+                    .find(|(id, p)| !p.installed && (id.as_str() == n || p.name.to_lowercase() == n || p.aliases.contains(&n)));
+                match missing {
+                    Some((_, p)) => bail!("{} isn't installed here; Nyx Store or nyx-system catalog install it", p.name),
+                    None => return Err(e),
+                }
+            }
+        }
+    }
+    Ok(picks)
+}
+
 /// How a target is updated, in a few words.
 pub fn how(t: &Target) -> &'static str {
     match t.provider {

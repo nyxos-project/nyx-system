@@ -10,8 +10,7 @@ use nyx_update::run::Outcome;
 use nyx_update::{Category, Item, Pick, Plan, Snapshot, Step, Target};
 use std::io::IsTerminal;
 
-pub const USAGE: &str = "\
-  nyx-system update [TARGET...] [--dry-run] [--yes] [--json]
+pub const USAGE: &str = "  nyx-system update [TARGET...] [--dry-run] [--yes] [--json]
                                           Update everything, or: system (NixOS, Nyx apps),
                                           apps (Flatpaks, your Nix profile), tools
                                           (coding agents), firmware, or one thing by
@@ -129,7 +128,7 @@ async fn update(args: &[&str]) -> Result<()> {
     });
     let targets = nyx_update::targets(&snapshot);
     let refs: Vec<&str> = names.iter().map(String::as_str).collect();
-    let picks = nyx_update::resolve(&targets, &refs)?;
+    let picks = nyx_update::resolve_installed(&snapshot, &targets, &refs)?;
     let mut plan = nyx_update::plan(&snapshot, &targets, &picks, &request);
 
     if f.json && f.dry_run {

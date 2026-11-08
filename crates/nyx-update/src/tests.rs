@@ -170,6 +170,17 @@ fn unknown_names_suggest_close_ones() {
 }
 
 #[test]
+fn a_tool_that_isnt_installed_says_so() {
+    let s = machine();
+    let t = targets(&s);
+    let e = resolve_installed(&s, &t, &["crush"]).unwrap_err().to_string();
+    assert!(e.contains("Crush isn't installed here"), "{e}");
+    assert!(resolve_installed(&s, &t, &["claude"]).is_ok());
+    assert_eq!(resolve_installed(&s, &t, &[]).unwrap().len(), Category::ALL.len());
+    assert!(resolve_installed(&s, &t, &["zzzzzz"]).unwrap_err().to_string().contains("nothing installed"));
+}
+
+#[test]
 fn nothing_new_is_an_empty_plan() {
     let mut s = machine();
     s.channel.head = s.channel.installed.clone();
