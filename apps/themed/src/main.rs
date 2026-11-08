@@ -8,7 +8,8 @@
 //!   `ThemeChanged`; clients fetch or resolve the new theme themselves;
 //! - it carries the theme to what isn't a Nyx app: Hyprland's colours
 //!   (`~/.config/hypr/nyx-theme.lua`, then `hyprctl reload`), Foot's
-//!   (`~/.config/foot/nyx-theme.ini`), GTK's light or dark preference, the wallpaper
+//!   (`~/.config/foot/nyx-theme.ini`), the zsh prompt's (`~/.config/zsh/nyx-theme.zsh`),
+//!   GTK's light or dark preference, the wallpaper
 //!   (the user's own, else the theme's default), the lock screen and the Umbra icons.
 //!
 //! The choices file is the source of truth, so apps keep working without this
