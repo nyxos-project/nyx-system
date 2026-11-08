@@ -1,75 +1,77 @@
-//! nyx-themed: carries the Nyx theme the user chose (`~/.config/nyx/theme.toml`, the
-//! file every Nyx app follows) to the rest of the desktop, live:
+//! nyx-themed: the theme service. It owns `io.github.design_nexus.nyx.Theme1` on the
+//! session bus and keeps every running client on the same theme:
 //!
-//! - Hyprland's border and background colours (`~/.config/hypr/nyx-theme.lua`, which
-//!   NyxOS's `hyprland.lua` loads), then `hyprctl reload`;
-//! - Foot's colours (`~/.config/foot/nyx-theme.ini`, included by `foot.ini`; Helix uses
-//!   the terminal's palette);
-//! - GTK's light or dark preference;
-//! - the wallpaper: the user's own (`appearance.toml`'s `wallpaper`), else the theme's
-//!   default from the Nyx wallpapers, shown by `nyx-wallpaper.service`;
-//! - the Umbra icons, redrawn in the theme's colours (`~/.local/share/icons`).
+//! - it watches the theme choices (`~/.config/nyx/theme.toml`), theme files,
+//!   installed themes and, on Omarchy, the active Omarchy theme;
+//! - on a change it resolves the system theme once, writes the immutable snapshot
+//!   (`$XDG_RUNTIME_DIR/nyx/theme/system.json`) as the next generation and emits
+//!   `ThemeChanged`; clients fetch or resolve the new theme themselves;
+//! - it carries the theme to what isn't a Nyx app: Hyprland's colours
+//!   (`~/.config/hypr/nyx-theme.lua`, then `hyprctl reload`), Foot's
+//!   (`~/.config/foot/nyx-theme.ini`), GTK's light or dark preference, the wallpaper
+//!   (the user's own, else the theme's default), the lock screen and the Umbra icons.
 //!
-//! `--once` writes everything and exits; without it, it also follows changes.
+//! The choices file is the source of truth, so apps keep working without this
+//! service; it only makes changes arrive at once and in step.
+//!
+//! `--once` applies everything and exits. `--no-outputs` (or `NYX_THEMED_OUTPUTS=0`)
+//! leaves the desktop files alone, for tests.
 
 mod outputs;
+mod service;
 
 use anyhow::Result;
 use notify::{RecursiveMode, Watcher};
-use std::path::PathBuf;
 use std::time::Duration;
 
-fn config_home() -> PathBuf {
-    std::env::var_os("XDG_CONFIG_HOME")
-        .map(PathBuf::from)
-        .filter(|p| p.is_absolute())
-        .unwrap_or_else(|| PathBuf::from(std::env::var_os("HOME").unwrap_or_default()).join(".config"))
-}
-
-fn apply_all() {
-    let theme = nyx_theme::current_theme();
-    let appearance = nyx_config::Layers::standard().merged("appearance").unwrap_or_default();
-    for (what, result) in outputs::write_all(&theme, &appearance) {
-        if let Err(e) = result {
-            eprintln!("nyx-themed: {what}: {e:#}");
-        }
-    }
-    eprintln!("nyx-themed: {} applied", theme.id);
-}
-
-fn main() -> Result<()> {
-    apply_all();
-    if std::env::args().any(|a| a == "--once") {
+#[tokio::main(flavor = "current_thread")]
+async fn main() -> Result<()> {
+    let args: Vec<String> = std::env::args().collect();
+    let outputs_on = !args.iter().any(|a| a == "--no-outputs") && std::env::var("NYX_THEMED_OUTPUTS").as_deref() != Ok("0");
+    if args.iter().any(|a| a == "--once") {
+        service::refresh(outputs_on, "start");
         return Ok(());
     }
-    let dir = config_home().join("nyx");
-    std::fs::create_dir_all(&dir)?;
-    let (tx, rx) = std::sync::mpsc::channel();
+    let state = service::State::new(outputs_on);
+    let svc = service::Service { state: state.clone() };
+    let conn = zbus::connection::Builder::session()?
+        .name(nyx_theme_core::dbus::BUS_NAME)?
+        .serve_at(nyx_theme_core::dbus::PATH, svc)?
+        .build()
+        .await?;
+    service::changed(&conn, &state, "start").await;
+
+    let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
     let mut watcher = notify::recommended_watcher(move |e: notify::Result<notify::Event>| {
-        // Reading the files (as this service and every Nyx app does) is no change; reacting
-        // to it would apply the theme over and over.
+        // Reading the files (as this service and every Nyx app does) is no change;
+        // staging and rollback copies are the installer's business.
         if let Ok(e) = e
             && !matches!(e.kind, notify::EventKind::Access(_))
-            && e.paths.iter().any(|p| p.file_name().is_some_and(|n| n == "theme.toml" || n == "appearance.toml"))
+            && e.paths.iter().any(|p| {
+                let s = p.to_string_lossy();
+                !s.contains("/.staging") && !s.contains("/.previous") && !s.ends_with(".lock") && !s.contains(".tmp-")
+            })
         {
             let _ = tx.send(());
         }
     })?;
-    watcher.watch(&dir, RecursiveMode::NonRecursive)?;
-    // The Omarchy theme's colours, when an app follows them, come and go with it too.
-    let _ = watcher.watch(&nyx_config_state().join("omarchy/current"), RecursiveMode::NonRecursive);
-    while rx.recv().is_ok() {
-        // An app writes the file in steps; take the last of a burst.
-        std::thread::sleep(Duration::from_millis(300));
+    let installed = nyx_theme_core::paths::installed_dir();
+    let _ = std::fs::create_dir_all(nyx_theme_core::paths::theme_dirs()[0].as_path());
+    let _ = std::fs::create_dir_all(&installed);
+    for dir in nyx_theme_core::paths::watched_dirs() {
+        // Installed themes live in a folder each; the Omarchy folders exist only on Omarchy.
+        let mode = if dir == installed { RecursiveMode::Recursive } else { RecursiveMode::NonRecursive };
+        if let Err(e) = watcher.watch(&dir, mode)
+            && dir.exists()
+        {
+            eprintln!("nyx-themed: can't watch {}: {e}", dir.display());
+        }
+    }
+    while rx.recv().await.is_some() {
+        // A change arrives in steps (write, rename); take the last of a burst.
+        tokio::time::sleep(Duration::from_millis(250)).await;
         while rx.try_recv().is_ok() {}
-        apply_all();
+        service::changed(&conn, &state, "files-changed").await;
     }
     Ok(())
-}
-
-fn nyx_config_state() -> PathBuf {
-    std::env::var_os("XDG_STATE_HOME")
-        .map(PathBuf::from)
-        .filter(|p| p.is_absolute())
-        .unwrap_or_else(|| PathBuf::from(std::env::var_os("HOME").unwrap_or_default()).join(".local/state"))
 }

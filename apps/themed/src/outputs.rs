@@ -2,7 +2,7 @@
 //! changes, and each thing that reads one is told only then.
 
 use anyhow::{Context, Result};
-use nyx_theme::Theme;
+use nyx_theme_core::{A11y, Registry, Theme, resolver};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 
@@ -187,7 +187,8 @@ fn lock_theme(theme: &Theme, appearance: &toml::Table) -> Theme {
     appearance
         .get("lock-theme")
         .and_then(|v| v.as_str())
-        .and_then(|id| nyx_theme::all().into_iter().find(|t| t.id == nyx_theme::current_id(id)))
+        .and_then(|id| resolver::resolve_id(&Registry::load(), id, None, &A11y::default()))
+        .map(|r| r.theme)
         .unwrap_or_else(|| theme.clone())
 }
 
@@ -263,7 +264,8 @@ mod tests {
 
     #[test]
     fn theme_files() {
-        let theme = nyx_theme::current_theme();
+        let reg = Registry::builtin();
+        let theme = resolver::resolve_id(&reg, nyx_theme_core::DEFAULT_THEME, None, &A11y::default()).unwrap().theme;
         let lua = hyprland_lua(&theme);
         assert!(lua.contains("active_border = \"rgb(") && lua.contains("background_color"));
         let lock = hyprlock_conf(&theme, Some(Path::new("/w/a.jpg")));

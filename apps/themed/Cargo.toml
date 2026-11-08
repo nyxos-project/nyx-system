@@ -1,6 +1,6 @@
 [package]
 name = "nyx-themed"
-description = "The NyxOS theme service: the chosen Nyx theme on the desktop, terminal, GTK and wallpaper"
+description = "The NyxOS theme service: io.github.design_nexus.nyx.Theme1 (theme changes, generations, the resolved snapshot), and the chosen theme on the desktop, terminal, GTK and wallpaper"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
@@ -9,11 +9,15 @@ repository.workspace = true
 
 [dependencies]
 nyx-config = { path = "../../crates/nyx-config" }
-nyx-theme = { git = "https://github.com/design-nexus/nyx-design.git", rev = "d2398b346b6bc414cc031b0a08a1b2a9a0f6ee2e" }
+nyx-theme-core = { git = "https://github.com/design-nexus/nyx-design.git", rev = "318a2a43c294fed7c979003025dbe997a1cf9ce4", default-features = false }
 anyhow.workspace = true
+serde_json.workspace = true
 toml.workspace = true
+tokio.workspace = true
+zbus.workspace = true
 notify = "8"
 
 [dev-dependencies]
+futures-util = "0.3"
 serde_json.workspace = true
 tempfile.workspace = true
