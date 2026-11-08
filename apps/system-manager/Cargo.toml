@@ -10,6 +10,8 @@ repository.workspace = true
 [dependencies]
 nyx-config = { path = "../../crates/nyx-config" }
 nyx-system-proto = { path = "../../crates/nyx-system-proto" }
+nyx-update = { path = "../../crates/nyx-update" }
+libc = "0.2"
 anyhow.workspace = true
 serde.workspace = true
 serde_json.workspace = true

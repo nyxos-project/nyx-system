@@ -1,0 +1,729 @@
+//! `nyx update`: everything on NyxOS that can be updated, found by name, planned, then
+//! updated through the one mechanism that owns it.
+//!
+//! - The **channel** (NixOS, the NyxOS modules, nixpkgs, every Nyx app) through the
+//!   System Manager, which updates the system's flake and rebuilds.
+//! - **Tools** NyxOS packages from pins (coding agents and the like), one at a time, by
+//!   the System Manager copying a tool's pin from the head of the channel.
+//! - The user's **Nix profile** (`nix profile upgrade`) and **Flatpaks**
+//!   (`flatpak update --user`), as the user.
+//! - **Firmware** through fwupd, never without asking.
+//!
+//! [`Snapshot`] is what's on the machine and what's available ([`probe`] looks);
+//! [`targets`] turns it into named [`Target`]s; [`resolve`] finds what the person asked
+//! for; [`plan`] says what updating it takes; [`run`] does it. Settings and the Store use
+//! the same engine through `nyx-system update --json`.
+
+pub mod policy;
+pub mod probe;
+pub mod run;
+
+use anyhow::{Result, bail};
+use nyx_system_proto::ToolPin;
+use serde::{Deserialize, Serialize};
+use std::collections::BTreeMap;
+
+/// The reserved names: `nyx update system` and so on.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum Category {
+    System,
+    Apps,
+    Tools,
+    Firmware,
+}
+
+impl Category {
+    pub const ALL: [Category; 4] = [Category::System, Category::Apps, Category::Tools, Category::Firmware];
+
+    pub fn parse(s: &str) -> Option<Category> {
+        Some(match s {
+            "system" => Category::System,
+            "apps" => Category::Apps,
+            "tools" => Category::Tools,
+            "firmware" => Category::Firmware,
+            _ => return None,
+        })
+    }
+
+    pub fn title(self) -> &'static str {
+        match self {
+            Category::System => "System",
+            Category::Apps => "Applications",
+            Category::Tools => "Tools",
+            Category::Firmware => "Firmware",
+        }
+    }
+}
+
+/// The mechanism that owns a target.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum Provider {
+    /// The system channel: NixOS, Nyx apps, apps from nixpkgs.
+    Channel,
+    /// A tool NyxOS packages from a pin.
+    ToolPin,
+    /// The user's Nix profile.
+    Profile,
+    Flatpak,
+    Firmware,
+}
+
+/// What finishing an update of it takes.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum Restart {
+    /// Reopening the app, if it's open.
+    App,
+    /// Maybe restarting the computer (a new kernel, new firmware).
+    Computer,
+}
+
+/// Something that can be updated.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Target {
+    /// What `nyx update ID` takes: a pin's name, a catalog id, a profile element, a
+    /// Flatpak id.
+    pub id: String,
+    pub name: String,
+    pub category: Category,
+    pub provider: Provider,
+    pub installed: Option<String>,
+    /// A newer version, when one is known.
+    pub available: Option<String>,
+    /// Other names it answers to.
+    #[serde(default)]
+    pub aliases: Vec<String>,
+    /// The administrator's password (a system rebuild).
+    pub admin: bool,
+    pub restart: Restart,
+    /// Whether a mistake can be undone (a generation, a profile rollback).
+    pub rollback: bool,
+    /// A tool whose newer pin is built differently now: it comes with the system update.
+    #[serde(default)]
+    pub needs_channel: bool,
+    /// The provider's own handle: a firmware device id, a profile element, a Flatpak id.
+    pub key: String,
+}
+
+impl Target {
+    fn answers_to(&self, name: &str) -> bool {
+        let n = name.to_lowercase();
+        self.id.to_lowercase() == n || self.name.to_lowercase() == n || self.aliases.iter().any(|a| a.to_lowercase() == n)
+    }
+
+    pub fn has_update(&self) -> bool {
+        self.available.is_some()
+    }
+}
+
+/// A channel revision.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Rev {
+    pub rev: String,
+    /// Seconds since the epoch.
+    pub last_modified: i64,
+}
+
+impl Rev {
+    pub fn describe(&self) -> String {
+        format!("{} ({})", &self.rev[..self.rev.len().min(7)], date(self.last_modified))
+    }
+}
+
+/// `YYYY-MM-DD` for seconds since the epoch (UTC).
+pub fn date(secs: i64) -> String {
+    // Howard Hinnant's civil-from-days.
+    let z = secs.div_euclid(86_400) + 719_468;
+    let era = z.div_euclid(146_097);
+    let doe = z - era * 146_097;
+    let yoe = (doe - doe / 1460 + doe / 36_524 - doe / 146_096) / 365;
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+    let mp = (5 * doy + 2) / 153;
+    let d = doy - (153 * mp + 2) / 5 + 1;
+    let m = if mp < 10 { mp + 3 } else { mp - 9 };
+    let y = yoe + era * 400 + i64::from(m <= 2);
+    format!("{y:04}-{m:02}-{d:02}")
+}
+
+/// The system's channel: the flake input `nyxos` and its branch.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Channel {
+    /// `github:nyxos-project/nyxos/stable`.
+    pub url: Option<String>,
+    /// `stable`.
+    pub branch: String,
+    pub installed: Option<Rev>,
+    /// The head of the branch, once checked.
+    pub head: Option<Rev>,
+    /// Why it couldn't be checked.
+    pub error: Option<String>,
+}
+
+impl Channel {
+    pub fn has_update(&self) -> bool {
+        matches!((&self.installed, &self.head), (Some(i), Some(h)) if i.rev != h.rev && h.last_modified >= i.last_modified)
+    }
+}
+
+/// An app that comes with the channel.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ChannelApp {
+    pub id: String,
+    pub name: String,
+    pub aliases: Vec<String>,
+}
+
+/// An element of the user's Nix profile.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ProfileElement {
+    pub name: String,
+    pub url: String,
+    /// A coding agent (from the catalog's agent sections) counts as a tool.
+    pub tool: bool,
+    pub aliases: Vec<String>,
+}
+
+/// A Flatpak installed for the user.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct Flatpak {
+    pub id: String,
+    pub name: String,
+    pub version: Option<String>,
+    /// The version an update brings, once checked.
+    pub update: Option<String>,
+    pub aliases: Vec<String>,
+}
+
+/// A device fwupd can update.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Device {
+    pub id: String,
+    pub name: String,
+    pub version: String,
+    pub update: Option<String>,
+    /// What the release says about itself.
+    pub summary: Option<String>,
+    pub needs_restart: bool,
+}
+
+/// What fwupd says.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", tag = "state")]
+pub enum Firmware {
+    /// Not checked (not asked for, or turned off in the update settings).
+    NotChecked,
+    /// fwupd isn't there or isn't running: why, and what to do.
+    Unavailable {
+        reason: String,
+    },
+    Devices {
+        devices: Vec<Device>,
+    },
+}
+
+/// What's on this machine and what's available.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Snapshot {
+    pub channel: Channel,
+    /// The tools as this system was built with them ([`nyx_system_proto::TOOLS_FILE`]).
+    pub tools: BTreeMap<String, ToolPin>,
+    /// The pins at the head of the channel, once checked.
+    pub head_tools: Option<BTreeMap<String, ToolPin>>,
+    /// More names for tools, from the catalog (`cursor-agent` for `cursor-cli`).
+    pub tool_aliases: BTreeMap<String, Vec<String>>,
+    pub apps: Vec<ChannelApp>,
+    pub profile: Vec<ProfileElement>,
+    pub flatpaks: Vec<Flatpak>,
+    pub firmware: Firmware,
+    /// Whether availability was checked (over the network).
+    pub checked: bool,
+}
+
+/// Everything in `s` that can be updated.
+pub fn targets(s: &Snapshot) -> Vec<Target> {
+    let mut out = Vec::new();
+    out.push(Target {
+        id: "system".into(),
+        name: format!("NyxOS ({})", if s.channel.branch.is_empty() { "channel" } else { &s.channel.branch }),
+        category: Category::System,
+        provider: Provider::Channel,
+        installed: s.channel.installed.as_ref().map(Rev::describe),
+        available: s.channel.has_update().then(|| s.channel.head.as_ref().map(Rev::describe)).flatten(),
+        aliases: vec!["nyxos".into(), "nixos".into()],
+        admin: true,
+        restart: Restart::Computer,
+        rollback: true,
+        needs_channel: false,
+        key: "channel".into(),
+    });
+    for (id, pin) in s.tools.iter().filter(|(_, p)| p.installed) {
+        let head = s.head_tools.as_ref().and_then(|h| h.get(id));
+        let newer = head.filter(|h| pin.older_than(h));
+        let mut aliases = pin.aliases.clone();
+        aliases.extend(s.tool_aliases.get(id).cloned().unwrap_or_default());
+        out.push(Target {
+            id: id.clone(),
+            name: if pin.name.is_empty() { id.clone() } else { pin.name.clone() },
+            category: Category::Tools,
+            provider: Provider::ToolPin,
+            installed: Some(pin.release()),
+            available: newer.map(ToolPin::release),
+            aliases,
+            admin: true,
+            restart: Restart::App,
+            rollback: true,
+            needs_channel: newer.is_some_and(|h| h.recipe != pin.recipe),
+            key: id.clone(),
+        });
+    }
+    for a in &s.apps {
+        out.push(Target {
+            id: a.id.clone(),
+            name: a.name.clone(),
+            category: Category::Apps,
+            provider: Provider::Channel,
+            installed: None,
+            available: None,
+            aliases: a.aliases.clone(),
+            admin: true,
+            restart: Restart::App,
+            rollback: true,
+            needs_channel: false,
+            key: "channel".into(),
+        });
+    }
+    for e in &s.profile {
+        out.push(Target {
+            id: e.name.clone(),
+            name: e.name.clone(),
+            category: if e.tool { Category::Tools } else { Category::Apps },
+            provider: Provider::Profile,
+            installed: None,
+            available: None,
+            aliases: e.aliases.clone(),
+            admin: false,
+            restart: Restart::App,
+            rollback: true,
+            needs_channel: false,
+            key: e.name.clone(),
+        });
+    }
+    for f in &s.flatpaks {
+        out.push(Target {
+            id: f.id.clone(),
+            name: f.name.clone(),
+            category: Category::Apps,
+            provider: Provider::Flatpak,
+            installed: f.version.clone(),
+            available: f.update.clone(),
+            aliases: f.aliases.clone(),
+            admin: false,
+            restart: Restart::App,
+            rollback: false,
+            needs_channel: false,
+            key: f.id.clone(),
+        });
+    }
+    if let Firmware::Devices { devices } = &s.firmware {
+        for d in devices.iter().filter(|d| d.update.is_some()) {
+            out.push(Target {
+                id: format!("firmware:{}", slug(&d.name)),
+                name: d.name.clone(),
+                category: Category::Firmware,
+                provider: Provider::Firmware,
+                installed: Some(d.version.clone()),
+                available: d.update.clone(),
+                aliases: Vec::new(),
+                admin: false,
+                restart: Restart::Computer,
+                rollback: false,
+                needs_channel: false,
+                key: d.id.clone(),
+            });
+        }
+    }
+    out
+}
+
+fn slug(s: &str) -> String {
+    let mut out = String::new();
+    for c in s.chars() {
+        if c.is_ascii_alphanumeric() {
+            out.push(c.to_ascii_lowercase());
+        } else if !out.ends_with('-') {
+            out.push('-');
+        }
+    }
+    out.trim_matches('-').to_string()
+}
+
+/// What a name on the command line stands for.
+#[derive(Debug, Clone, PartialEq)]
+pub enum Pick {
+    Category(Category),
+    /// An index into the targets.
+    Target(usize),
+}
+
+/// Find what each of `names` stands for: a category, or the one installed target that
+/// answers to it. A name that fits several targets, or none, is an error that says so.
+pub fn resolve(targets: &[Target], names: &[&str]) -> Result<Vec<Pick>> {
+    if names.is_empty() {
+        return Ok(Category::ALL.into_iter().map(Pick::Category).collect());
+    }
+    let mut picks = Vec::new();
+    for name in names {
+        if let Some(c) = Category::parse(name) {
+            picks.push(Pick::Category(c));
+            continue;
+        }
+        let found: Vec<usize> = targets.iter().enumerate().filter(|(_, t)| t.answers_to(name)).map(|(i, _)| i).collect();
+        match found.as_slice() {
+            [one] => picks.push(Pick::Target(*one)),
+            [] => {
+                let close = suggestions(targets, name);
+                if close.is_empty() {
+                    bail!("nothing installed here is called {name} (nyx update status lists what is)");
+                }
+                bail!("nothing installed here is called {name}; did you mean {}?", close.join(", "));
+            }
+            many => {
+                let list: Vec<String> = many
+                    .iter()
+                    .map(|i| {
+                        let t = &targets[*i];
+                        format!("  {:<24} {} ({})", t.id, t.name, how(t))
+                    })
+                    .collect();
+                bail!("{name} could be any of these; name the one you mean:\n{}", list.join("\n"));
+            }
+        }
+    }
+    Ok(picks)
+}
+
+/// How a target is updated, in a few words.
+pub fn how(t: &Target) -> &'static str {
+    match t.provider {
+        Provider::Channel if t.category == Category::System => "the system channel",
+        Provider::Channel => "comes with the system channel",
+        Provider::ToolPin => "a NyxOS tool",
+        Provider::Profile => "your Nix profile",
+        Provider::Flatpak => "a Flatpak",
+        Provider::Firmware => "firmware",
+    }
+}
+
+/// Installed names close to `name`.
+fn suggestions(targets: &[Target], name: &str) -> Vec<String> {
+    let n = name.to_lowercase();
+    let mut out: Vec<String> = Vec::new();
+    for t in targets {
+        let names = std::iter::once(&t.id).chain(&t.aliases);
+        if names.into_iter().any(|x| {
+            let x = x.to_lowercase();
+            (n.len() >= 3 && (x.contains(&n) || n.contains(&x) && x.len() >= 3)) || distance(&x, &n) <= 2
+        }) && !out.contains(&t.id)
+        {
+            out.push(t.id.clone());
+        }
+    }
+    out.truncate(5);
+    out
+}
+
+/// Levenshtein distance.
+fn distance(a: &str, b: &str) -> usize {
+    let b: Vec<char> = b.chars().collect();
+    let mut row: Vec<usize> = (0..=b.len()).collect();
+    for (i, ca) in a.chars().enumerate() {
+        let mut prev = row[0];
+        row[0] = i + 1;
+        for (j, cb) in b.iter().enumerate() {
+            let cur = row[j + 1];
+            row[j + 1] = (prev + usize::from(ca != *cb)).min(row[j] + 1).min(row[j + 1] + 1);
+            prev = cur;
+        }
+    }
+    row[b.len()]
+}
+
+/// One step of a plan, for the mechanism that owns it.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", tag = "kind")]
+pub enum Step {
+    /// One System Manager rebuild: the channel and/or tool pins.
+    System { channel: bool, tools: Vec<String> },
+    /// `nix profile upgrade`: these elements, or every one when empty.
+    Profile { names: Vec<String> },
+    /// `flatpak update --user`: these apps, or every one when empty.
+    Flatpak { apps: Vec<String> },
+    /// `fwupdmgr update`: these devices (ids). Never without asking.
+    Firmware { devices: Vec<String> },
+}
+
+/// One line of a plan: what changes, from what to what.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct Item {
+    pub name: String,
+    pub from: Option<String>,
+    pub to: Option<String>,
+    /// How it's updated.
+    pub how: String,
+}
+
+/// What updating a request takes.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Plan {
+    pub request: String,
+    pub steps: Vec<Step>,
+    pub items: Vec<Item>,
+    /// What the person should know: what comes with what, what's already current.
+    pub notes: Vec<String>,
+    /// Something asked for needs the system update instead: offer it.
+    pub suggest_system: bool,
+    /// The administrator's password is asked for (a system rebuild).
+    pub admin: bool,
+    /// A restart of the computer may be needed afterwards.
+    pub may_restart: bool,
+    /// The firmware step was only implied (`nyx update`): ask before it, and leave it
+    /// out of an unattended run.
+    pub firmware_implied: bool,
+}
+
+impl Plan {
+    pub fn is_empty(&self) -> bool {
+        self.steps.is_empty()
+    }
+}
+
+/// The plan for `picks`.
+pub fn plan(s: &Snapshot, targets: &[Target], picks: &[Pick], request: &str) -> Plan {
+    let mut p = Plan { request: request.to_string(), ..Plan::default() };
+    let mut channel = false;
+    let mut tools: Vec<String> = Vec::new();
+    let mut profile: Vec<String> = Vec::new();
+    let mut profile_all = false;
+    let mut flatpaks: Vec<String> = Vec::new();
+    let mut flatpak_all = false;
+    let mut firmware: Vec<String> = Vec::new();
+    let categories: Vec<Category> =
+        picks.iter().filter_map(|pk| if let Pick::Category(c) = pk { Some(*c) } else { None }).collect();
+    let everything = categories.len() == Category::ALL.len();
+
+    for c in &categories {
+        match c {
+            Category::System => {
+                // Asked for by name but not checked: let the System Manager find out.
+                if s.channel.has_update() || (!everything && s.channel.head.is_none() && s.channel.url.is_some()) {
+                    channel = true;
+                } else if let Some(e) = &s.channel.error {
+                    p.notes.push(format!("The system channel couldn't be checked: {e}"));
+                }
+            }
+            Category::Apps => {
+                if s.channel.has_update() {
+                    channel = true;
+                    if !everything {
+                        p.notes
+                            .push("Nyx apps and apps from nixpkgs come with the system channel, so this updates it too.".into());
+                    }
+                }
+                let user_apps: Vec<&ProfileElement> = s.profile.iter().filter(|e| !e.tool).collect();
+                if !user_apps.is_empty() {
+                    if everything || s.profile.iter().all(|e| !e.tool) {
+                        profile_all = true;
+                    } else {
+                        profile.extend(user_apps.iter().map(|e| e.name.clone()));
+                    }
+                }
+                let updatable = s.flatpaks.iter().any(|f| f.update.is_some()) || (!s.checked && !s.flatpaks.is_empty());
+                if updatable {
+                    flatpak_all = true;
+                }
+            }
+            Category::Tools => {
+                for t in targets.iter().filter(|t| t.provider == Provider::ToolPin && t.has_update()) {
+                    if t.needs_channel {
+                        p.notes.push(format!(
+                            "{} {} is built differently now, so it comes with the system update (nyx update system).",
+                            t.name,
+                            t.available.as_deref().unwrap_or_default()
+                        ));
+                        p.suggest_system = !everything;
+                    } else {
+                        tools.push(t.id.clone());
+                    }
+                }
+                let agents: Vec<String> = s.profile.iter().filter(|e| e.tool).map(|e| e.name.clone()).collect();
+                if !profile_all {
+                    profile.extend(agents);
+                }
+            }
+            Category::Firmware => match &s.firmware {
+                Firmware::Devices { devices } => {
+                    let with: Vec<&Device> = devices.iter().filter(|d| d.update.is_some()).collect();
+                    if with.is_empty() {
+                        if !everything {
+                            p.notes.push(if devices.is_empty() {
+                                "No device here gets firmware updates through fwupd.".into()
+                            } else {
+                                "The firmware is up to date.".into()
+                            });
+                        }
+                    } else {
+                        firmware.extend(with.iter().map(|d| d.id.clone()));
+                        p.firmware_implied = everything;
+                    }
+                }
+                Firmware::Unavailable { reason } => p.notes.push(format!("Firmware: {reason}")),
+                Firmware::NotChecked => {}
+            },
+        }
+    }
+
+    for pk in picks {
+        let Pick::Target(i) = pk else { continue };
+        let t = &targets[*i];
+        match t.provider {
+            Provider::Channel if t.category == Category::System => {
+                if s.channel.has_update() || s.channel.head.is_none() {
+                    channel = true;
+                } else {
+                    p.notes.push(format!("{} is up to date.", t.name));
+                }
+            }
+            Provider::Channel => {
+                if s.channel.has_update() {
+                    channel = true;
+                    p.notes.push(format!("{} comes with the system channel, so this updates the system.", t.name));
+                } else {
+                    p.notes.push(format!("{} is as new as the system channel has it.", t.name));
+                }
+            }
+            Provider::ToolPin => match (&t.available, t.needs_channel) {
+                (Some(v), true) => {
+                    p.notes.push(format!("{} {v} is built differently now, so it comes with the system update.", t.name));
+                    p.suggest_system = true;
+                }
+                (Some(_), false) => tools.push(t.id.clone()),
+                (None, _) if s.head_tools.is_none() => {
+                    p.notes.push(format!("{}: the channel couldn't be checked, so its newest version isn't known.", t.name))
+                }
+                (None, _) => p.notes.push(format!("{} is up to date ({}).", t.name, t.installed.as_deref().unwrap_or("?"))),
+            },
+            Provider::Profile => profile.push(t.key.clone()),
+            Provider::Flatpak => {
+                if t.has_update() || !s.checked {
+                    flatpaks.push(t.key.clone());
+                } else {
+                    p.notes.push(format!("{} is up to date.", t.name));
+                }
+            }
+            Provider::Firmware => firmware.push(t.key.clone()),
+        }
+    }
+
+    // The channel brings every tool's pin.
+    if channel {
+        p.steps.push(Step::System { channel: true, tools: Vec::new() });
+        p.items.push(Item {
+            name: targets[0].name.clone(),
+            from: targets[0].installed.clone(),
+            to: targets[0].available.clone(),
+            how: "the system channel: NixOS, Nyx apps, apps from nixpkgs".into(),
+        });
+        for t in targets.iter().filter(|t| t.provider == Provider::ToolPin && t.has_update()) {
+            p.items.push(Item {
+                name: t.name.clone(),
+                from: t.installed.clone(),
+                to: t.available.clone(),
+                how: "with the system channel".into(),
+            });
+        }
+    } else if !tools.is_empty() {
+        tools.sort();
+        tools.dedup();
+        for id in &tools {
+            if let Some(t) = targets.iter().find(|t| &t.id == id) {
+                p.items.push(Item {
+                    name: t.name.clone(),
+                    from: t.installed.clone(),
+                    to: t.available.clone(),
+                    how: how(t).into(),
+                });
+            }
+        }
+        p.steps.push(Step::System { channel: false, tools });
+    }
+    if profile_all || !profile.is_empty() {
+        profile.sort();
+        profile.dedup();
+        let names = if profile_all { Vec::new() } else { profile };
+        let shown = if names.is_empty() { "your Nix profile".to_string() } else { names.join(", ") };
+        p.items.push(Item { name: shown, from: None, to: None, how: "nix profile upgrade (only what has news changes)".into() });
+        p.steps.push(Step::Profile { names });
+    }
+    if flatpak_all || !flatpaks.is_empty() {
+        flatpaks.sort();
+        flatpaks.dedup();
+        let apps = if flatpak_all { Vec::new() } else { flatpaks };
+        for f in s.flatpaks.iter().filter(|f| (apps.is_empty() && (f.update.is_some() || !s.checked)) || apps.contains(&f.id)) {
+            p.items.push(Item { name: f.name.clone(), from: f.version.clone(), to: f.update.clone(), how: "a Flatpak".into() });
+        }
+        p.steps.push(Step::Flatpak { apps });
+    }
+    if !firmware.is_empty() {
+        firmware.sort();
+        firmware.dedup();
+        if let Firmware::Devices { devices } = &s.firmware {
+            for d in devices.iter().filter(|d| firmware.contains(&d.id)) {
+                p.items.push(Item {
+                    name: d.name.clone(),
+                    from: Some(d.version.clone()),
+                    to: d.update.clone(),
+                    how: "firmware (can't be undone)".into(),
+                });
+                p.may_restart |= d.needs_restart;
+            }
+        }
+        p.steps.push(Step::Firmware { devices: firmware });
+    }
+    p.admin = p.steps.iter().any(|s| matches!(s, Step::System { .. }));
+    p.may_restart |= p.steps.iter().any(|s| matches!(s, Step::System { channel: true, .. }));
+    p
+}
+
+/// What's available, for `nyx update status` and the daily check.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Status {
+    pub available: Vec<Item>,
+    pub notes: Vec<String>,
+}
+
+pub fn status(s: &Snapshot, targets: &[Target]) -> Status {
+    let mut st = Status::default();
+    for t in targets.iter().filter(|t| t.has_update()) {
+        let how = if t.needs_channel { "with the system update" } else { how(t) };
+        st.available.push(Item { name: t.name.clone(), from: t.installed.clone(), to: t.available.clone(), how: how.into() });
+    }
+    if let Some(e) = &s.channel.error {
+        st.notes.push(format!("The system channel couldn't be checked: {e}"));
+    }
+    if let Firmware::Unavailable { reason } = &s.firmware {
+        st.notes.push(format!("Firmware: {reason}"));
+    }
+    st
+}
+
+#[cfg(test)]
+mod tests;

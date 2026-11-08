@@ -42,6 +42,93 @@ pub mod action {
     pub const MOUNTS: &str = "io.github.nyxos_project.system.mounts";
 }
 
+/// The effective tool pins a system was built with, and whether it installs each
+/// (written by the NyxOS configuration).
+pub const TOOLS_FILE: &str = "/etc/nyxos/tools.json";
+
+/// A tool as [`TOOLS_FILE`] and a channel's `pkgs/tools/sources.json` describe it.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ToolPin {
+    #[serde(default)]
+    pub name: String,
+    pub version: String,
+    pub recipe: u32,
+    #[serde(default)]
+    pub aliases: Vec<String>,
+    /// Herdr's core, which can change without the app.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub core_version: Option<String>,
+    /// Only in [`TOOLS_FILE`].
+    #[serde(default)]
+    pub installed: bool,
+}
+
+impl ToolPin {
+    /// The version with what else can change in the same pin, as shown and compared.
+    pub fn release(&self) -> String {
+        match &self.core_version {
+            Some(core) => format!("{} (core {core})", self.version),
+            None => self.version.clone(),
+        }
+    }
+
+    /// Whether `other` is a newer release of this tool.
+    pub fn older_than(&self, other: &ToolPin) -> bool {
+        let key = |p: &ToolPin| format!("{}-{}", p.version, p.core_version.as_deref().unwrap_or("0"));
+        compare_versions(&key(self), &key(other)) == std::cmp::Ordering::Less
+    }
+}
+
+/// Compare versions the way Nix's `builtins.compareVersions` does: numbers as numbers,
+/// anything else as text, component by component.
+pub fn compare_versions(a: &str, b: &str) -> std::cmp::Ordering {
+    fn parts(s: &str) -> Vec<String> {
+        let mut out: Vec<String> = Vec::new();
+        let mut cur = String::new();
+        for c in s.chars() {
+            let boundary = cur.chars().last().is_some_and(|l| l.is_ascii_digit() != c.is_ascii_digit());
+            if !c.is_ascii_alphanumeric() || boundary {
+                if !cur.is_empty() {
+                    out.push(std::mem::take(&mut cur));
+                }
+                if !c.is_ascii_alphanumeric() {
+                    continue;
+                }
+            }
+            cur.push(c);
+        }
+        if !cur.is_empty() {
+            out.push(cur);
+        }
+        out
+    }
+    // Nix's componentsLT: "pre" is older than anything, a missing part older than a number.
+    fn lt(x: &str, y: &str) -> bool {
+        let (m, n) = (x.parse::<u64>().ok(), y.parse::<u64>().ok());
+        match (m, n) {
+            (Some(m), Some(n)) => m < n,
+            _ if x.is_empty() && n.is_some() => true,
+            _ if x == "pre" && y != "pre" => true,
+            _ if y == "pre" => false,
+            (Some(_), None) => false,
+            (None, Some(_)) => true,
+            _ => x < y,
+        }
+    }
+    let (a, b) = (parts(a), parts(b));
+    for i in 0..a.len().max(b.len()) {
+        let (x, y) = (a.get(i).map(String::as_str).unwrap_or(""), b.get(i).map(String::as_str).unwrap_or(""));
+        if lt(x, y) {
+            return std::cmp::Ordering::Less;
+        }
+        if lt(y, x) {
+            return std::cmp::Ordering::Greater;
+        }
+    }
+    std::cmp::Ordering::Equal
+}
+
 /// System services the manager may turn on or off, with what each is.
 pub const SERVICES: &[(&str, &str)] = &[
     ("bluetooth", "Bluetooth"),
@@ -693,6 +780,118 @@ pub fn valid_full_name(n: &str) -> bool {
     n.chars().count() <= 100 && !n.contains([':', '\n', '\r', ','])
 }
 
+/// What [`System::upgrade`] does, in one rebuild: update the channel (NixOS, nixpkgs,
+/// Nyx apps and the channel's tool pins), and/or bring single tools to the pins at the
+/// head of the channel. The manager fetches those pins itself; a client only names tools.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct UpgradeRequest {
+    #[serde(default)]
+    pub channel: bool,
+    /// Tool pin names (`claude-code`), ignored when `channel` is set: the channel brings
+    /// every tool's pin.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub tools: Vec<String>,
+    /// What the person asked for (`nyx update claude`), for the history.
+    #[serde(default)]
+    pub request: String,
+}
+
+impl UpgradeRequest {
+    pub fn validate(&self) -> Result<()> {
+        ensure!(self.channel || !self.tools.is_empty(), "nothing to update");
+        ensure!(self.tools.len() <= 50, "too many tools");
+        for t in &self.tools {
+            ensure!(valid_tool(t), "not a tool name: {t}");
+        }
+        ensure!(self.request.len() <= 500 && !self.request.contains(['\n', '\0']), "the request is one line");
+        Ok(())
+    }
+}
+
+/// A tool pin's name (`claude-code`).
+pub fn valid_tool(t: &str) -> bool {
+    (1..=40).contains(&t.len())
+        && t.bytes().all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-')
+        && !t.starts_with('-')
+}
+
+/// One package whose version changed.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct VersionChange {
+    pub name: String,
+    pub from: String,
+    pub to: String,
+}
+
+/// What an upgrade did.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct UpgradeResult {
+    pub summary: String,
+    pub generation_before: Option<u32>,
+    pub generation_after: Option<u32>,
+    /// The kernel, initrd or systemd changed: a restart finishes the update.
+    pub reboot: bool,
+    /// Programs still running from files the update replaced.
+    #[serde(default)]
+    pub restart: Vec<String>,
+    #[serde(default)]
+    pub changes: Vec<VersionChange>,
+}
+
+/// One entry in the update history (`/var/lib/nyx-system/history.jsonl` for the
+/// system's, `~/.local/state/nyx/update-history.jsonl` for a user's).
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct HistoryEntry {
+    /// Seconds since the epoch.
+    pub time: i64,
+    /// `system` or `user`.
+    pub scope: String,
+    pub request: String,
+    #[serde(default)]
+    pub targets: Vec<String>,
+    #[serde(default)]
+    pub changes: Vec<VersionChange>,
+    #[serde(default)]
+    pub generation_before: Option<u32>,
+    #[serde(default)]
+    pub generation_after: Option<u32>,
+    /// `updated`, `current` or `failed`.
+    pub result: String,
+    #[serde(default)]
+    pub reboot: bool,
+    #[serde(default)]
+    pub restart: Vec<String>,
+    #[serde(default)]
+    pub error: Option<String>,
+}
+
+/// History files keep this many entries.
+pub const HISTORY_KEEP: usize = 200;
+
+/// Add `entry` to the history file at `path`, keeping the last [`HISTORY_KEEP`].
+pub fn append_history(path: &std::path::Path, entry: &HistoryEntry) -> Result<()> {
+    if let Some(dir) = path.parent() {
+        std::fs::create_dir_all(dir)?;
+    }
+    let mut lines: Vec<String> =
+        std::fs::read_to_string(path).unwrap_or_default().lines().filter(|l| !l.trim().is_empty()).map(String::from).collect();
+    lines.push(serde_json::to_string(entry)?);
+    let skip = lines.len().saturating_sub(HISTORY_KEEP);
+    let tmp = path.with_extension("jsonl.new");
+    std::fs::write(&tmp, lines[skip..].join("\n") + "\n")?;
+    std::fs::rename(tmp, path)?;
+    Ok(())
+}
+
+/// The last `limit` entries of the history file at `path`, newest first.
+pub fn read_history(path: &std::path::Path, limit: usize) -> Vec<HistoryEntry> {
+    let text = std::fs::read_to_string(path).unwrap_or_default();
+    text.lines().rev().filter_map(|l| serde_json::from_str(l).ok()).take(limit).collect()
+}
+
 /// One system generation.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Generation {
@@ -721,6 +920,11 @@ pub trait System {
     fn reset_default(&self, domain: &str, key: &str) -> zbus::Result<()>;
     /// Update the system's inputs (NyxOS, nixpkgs, Nyx apps) and switch to the result.
     fn update(&self) -> zbus::Result<String>;
+    /// Update the channel and/or single tools (JSON [`UpgradeRequest`]) in one rebuild;
+    /// returns JSON [`UpgradeResult`]. Progress lines that start with `== ` name the stage.
+    fn upgrade(&self, request: &str) -> zbus::Result<String>;
+    /// The system's update history (JSON [`HistoryEntry`]s), newest first.
+    fn history(&self, limit: u32) -> zbus::Result<String>;
     /// [`apply`](Self::apply), then [`update`](Self::update), with one authorization
     /// for both. Empty `changes` (`[]`) only updates.
     fn apply_and_update(&self, changes: &str) -> zbus::Result<String>;
@@ -885,5 +1089,47 @@ mod tests {
         }
         assert!(valid_time_zone("America/Chicago") && valid_locale("en_US.UTF-8") && valid_keyboard_layout("us,de"));
         assert!(SystemSettings::parse(r#"{"version":1,"rootPassword":"x"}"#).is_err());
+    }
+
+    #[test]
+    fn upgrade_requests_are_validated() {
+        let ok = UpgradeRequest { channel: false, tools: vec!["claude-code".into()], request: "nyx update claude".into() };
+        assert!(ok.validate().is_ok());
+        assert!(UpgradeRequest::default().validate().is_err(), "nothing to do");
+        for bad in ["../x", "Claude", "a b", "-x", ""] {
+            let r = UpgradeRequest { tools: vec![bad.into()], ..Default::default() };
+            assert!(r.validate().is_err(), "{bad}");
+        }
+        let r = UpgradeRequest { channel: true, request: "x\ny".into(), ..Default::default() };
+        assert!(r.validate().is_err());
+    }
+
+    #[test]
+    fn versions_compare_like_nix() {
+        use std::cmp::Ordering::*;
+        assert_eq!(compare_versions("2.1.152", "2.1.311"), Less);
+        assert_eq!(compare_versions("0.100.0", "0.70.0"), Greater);
+        assert_eq!(compare_versions("2026.05.16-0338208", "2026.11.05-86047df"), Less);
+        assert_eq!(compare_versions("1.0", "1.0.1"), Less);
+        assert_eq!(compare_versions("1.0pre1", "1.0"), Less);
+        assert_eq!(compare_versions("1.5.1", "1.5.1"), Equal);
+        let herdr = |v: &str, c: &str| ToolPin { version: v.into(), core_version: Some(c.into()), ..Default::default() };
+        assert!(herdr("0.1.13", "0.1.18").older_than(&herdr("0.1.13", "0.1.19")), "a new core alone is newer");
+        assert!(!herdr("0.1.13", "0.1.18").older_than(&herdr("0.1.13", "0.1.18")));
+        assert_eq!(herdr("0.1.13", "0.1.18").release(), "0.1.13 (core 0.1.18)");
+    }
+
+    #[test]
+    fn history_keeps_the_last_entries() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("h/history.jsonl");
+        for i in 0..(HISTORY_KEEP + 5) {
+            let e = HistoryEntry { time: i as i64, scope: "system".into(), result: "updated".into(), ..Default::default() };
+            append_history(&path, &e).unwrap();
+        }
+        let all = read_history(&path, 1000);
+        assert_eq!(all.len(), HISTORY_KEEP);
+        assert_eq!(all[0].time, (HISTORY_KEEP + 4) as i64, "newest first");
+        assert_eq!(read_history(&path, 3).len(), 3);
     }
 }

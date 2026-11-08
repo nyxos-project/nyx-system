@@ -11,9 +11,10 @@
 mod generations;
 mod rebuild;
 mod snapshots;
+mod upgrade;
 
 use anyhow::{Context, Result};
-use nyx_system_proto::{BUS_NAME, Change, OBJECT_PATH, SystemSettings, action};
+use nyx_system_proto::{BUS_NAME, Change, OBJECT_PATH, SystemSettings, UpgradeRequest, action};
 use serde::Deserialize;
 use std::collections::HashMap;
 use std::path::PathBuf;
@@ -177,6 +178,14 @@ impl Manager {
         audit(uid, &actions.join(","), &summary, result.as_ref().map(String::as_str).unwrap_or("failed"));
         result
     }
+
+    /// The whole channel, already authorized: what `Update` has always done.
+    async fn channel_update(&self, uid: u32, request: &str, emitter: &SignalEmitter<'_>) -> anyhow::Result<String> {
+        let req = UpgradeRequest { channel: true, tools: Vec::new(), request: request.into() };
+        let result = upgrade::upgrade(&self.config, &req, emitter).await.map(|r| r.summary);
+        audit(uid, action::UPDATE, "update", result.as_ref().map(String::as_str).unwrap_or("failed"));
+        result
+    }
 }
 
 /// A client's JSON changes, validated, with what the computer has found by the manager
@@ -321,8 +330,7 @@ impl Manager {
             actions.pop();
             summary.push(self.apply_changes(uid, &changes, &actions, &emitter).await.map_err(failed)?);
         }
-        let result = rebuild::update(&self.config, &emitter).await;
-        audit(uid, action::UPDATE, "update", result.as_ref().map(String::as_str).unwrap_or("failed"));
+        let result = self.channel_update(uid, "update (with setup)", &emitter).await;
         self.touch();
         summary.push(result.map_err(failed)?);
         Ok(summary.join("\n"))
@@ -370,10 +378,36 @@ impl Manager {
         self.touch();
         let uid = authorize(conn, &header, action::UPDATE).await?;
         let _guard = self.busy.try_lock().map_err(|_| failed("another system change is running"))?;
-        let result = rebuild::update(&self.config, &emitter).await;
-        audit(uid, action::UPDATE, "update", result.as_ref().map(String::as_str).unwrap_or("failed"));
+        let result = self.channel_update(uid, "update", &emitter).await;
         self.touch();
         result.map_err(failed)
+    }
+
+    /// The channel and/or single tools in one rebuild (JSON `UpgradeRequest`); returns
+    /// JSON `UpgradeResult`.
+    async fn upgrade(
+        &self,
+        #[zbus(header)] header: Header<'_>,
+        #[zbus(connection)] conn: &Connection,
+        #[zbus(signal_emitter)] emitter: SignalEmitter<'_>,
+        request: &str,
+    ) -> fdo::Result<String> {
+        self.touch();
+        let request: UpgradeRequest = serde_json::from_str(request).map_err(|e| fdo::Error::InvalidArgs(e.to_string()))?;
+        request.validate().map_err(|e| fdo::Error::InvalidArgs(e.to_string()))?;
+        let uid = authorize(conn, &header, action::UPDATE).await?;
+        let _guard = self.busy.try_lock().map_err(|_| failed("another system change is running"))?;
+        let result = upgrade::upgrade(&self.config, &request, &emitter).await;
+        let what = if request.channel { "upgrade channel".to_string() } else { format!("upgrade {}", request.tools.join(",")) };
+        audit(uid, action::UPDATE, &what, result.as_ref().map(|r| r.summary.as_str()).unwrap_or("failed"));
+        self.touch();
+        serde_json::to_string(&result.map_err(failed)?).map_err(failed)
+    }
+
+    async fn history(&self, limit: u32) -> fdo::Result<String> {
+        self.touch();
+        let list = nyx_system_proto::read_history(&upgrade::history_file(&self.config), limit.min(1000) as usize);
+        serde_json::to_string(&list).map_err(failed)
     }
 
     async fn generations(&self) -> fdo::Result<String> {
@@ -552,6 +586,7 @@ fn stale() -> bool {
 #[tokio::main(flavor = "current_thread")]
 async fn main() -> Result<()> {
     let config = Config::load()?;
+    upgrade::recover_interrupted(&config);
     let last_use = Arc::new(std::sync::Mutex::new(Instant::now()));
     let manager = Manager { config, busy: Mutex::new(()), last_use: last_use.clone() };
     let conn = zbus::connection::Builder::system()?.name(BUS_NAME)?.serve_at(OBJECT_PATH, manager)?.build().await?;

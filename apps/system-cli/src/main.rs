@@ -1,5 +1,7 @@
 //! nyx-system: the System Manager and the configuration layers from a terminal.
 
+mod update;
+
 use anyhow::{Context, Result, bail};
 use futures_util::StreamExt;
 use nyx_catalog::{Catalog, Installed, Tier};
@@ -40,7 +42,7 @@ nyx-system: NyxOS's system settings, packages, services and generations
   nyx-system group add|remove GROUP USER
   nyx-system apply JSON|-                 Typed changes (nyx-system-proto's Change
                                           list), from the argument or stdin
-  nyx-system update                       Update NyxOS and its apps, then switch
+{UPDATE}
   nyx-system generations
   nyx-system rollback                     Back to the previous generation
   nyx-system clean [DAYS]                 Remove generations older than DAYS (14) and
@@ -61,6 +63,10 @@ nyx-system: NyxOS's system settings, packages, services and generations
 
 Changes to the system are built first and only switched to when the build works.
 ";
+
+fn usage() -> String {
+    USAGE.replace("{UPDATE}", update::USAGE)
+}
 
 fn change(name: &str, value: Option<String>) -> Result<Change> {
     Ok(match name {
@@ -243,7 +249,7 @@ fn print_layers(table: &toml::Table, domain: &str, layers: &Layers, prefix: &str
 async fn run(args: &[&str]) -> Result<()> {
     let layers = Layers::standard();
     match args {
-        [] | ["help" | "--help" | "-h"] => print!("{USAGE}"),
+        [] | ["help" | "--help" | "-h"] => print!("{}", usage()),
         ["settings"] => {
             let s: SystemSettings = serde_json::from_str(&proxy().await?.settings().await?)?;
             println!("{}", serde_json::to_string_pretty(&s)?);
@@ -359,10 +365,7 @@ async fn run(args: &[&str]) -> Result<()> {
             }
             apply(changes).await?
         }
-        ["update"] => {
-            let p = proxy().await?;
-            println!("{}", with_progress(&p, p.update()).await?);
-        }
+        ["update", rest @ ..] => update::run(rest).await?,
         ["rollback"] => {
             let p = proxy().await?;
             println!("{}", with_progress(&p, p.rollback()).await?);
@@ -405,7 +408,7 @@ async fn run(args: &[&str]) -> Result<()> {
         ["config", "set", domain, key, v] => layers.set(Layer::User, domain, key, value(v))?,
         ["config", "reset", domain, key] => layers.reset(Layer::User, domain, key)?,
         _ => {
-            eprint!("{USAGE}");
+            eprint!("{}", usage());
             std::process::exit(2);
         }
     }

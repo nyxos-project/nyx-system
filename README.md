@@ -11,6 +11,7 @@ theme service.
 | `nyx-config` | The configuration layers as a library |
 | `nyx-system-proto` | The settings, changes and D-Bus interface, for clients |
 | `nyx-catalog` | The software catalog (`crates/nyx-catalog/catalog.toml`), and the changes that install from it |
+| `nyx-update` | `nyx update`: what can be updated, found by name, planned and updated through what owns it ([docs/updates.md](docs/updates.md)) |
 | `nyx-themed` | User service: the chosen Nyx theme on Hyprland, Foot, GTK and the wallpaper, live |
 
 ## Configuration layers
@@ -48,12 +49,24 @@ nyx-system install --accept-unfree vscode
 nyx-system service printing on
 nyx-system app mail on                         # a Nyx app
 nyx-system group add docker ken
-nyx-system update
+nyx-system update                              # everything (also: nyx update)
+nyx-system update claude --dry-run             # one tool, planned only
+nyx-system update history
 nyx-system generations
 nyx-system rollback
 nyx-system default set appearance theme nord   # every new user's theme
 nyx-system config show appearance              # merged, with each value's layer
 ```
+
+## Updates
+
+`nyx update` updates the system channel, single tools, the user's Nix profile and
+Flatpaks, and firmware, each through the one mechanism that owns it, after showing the
+plan. System steps are one `Upgrade` call (polkit's `system.update`): the channel and/or
+tool pins taken from the head of the channel, built and switched to in one rebuild,
+undone if it fails, recorded in `/var/lib/nyx-system/history.jsonl`. See
+[docs/updates.md](docs/updates.md) for who owns what, the tool pins, the package CI and
+the safety rules.
 
 ## Software catalog
 

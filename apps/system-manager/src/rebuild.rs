@@ -59,17 +59,20 @@ fn rebuild_args<'a>(verb: &'a str, flake: &'a str, overrides: &'a str) -> [&'a s
     [verb, "--flake", flake, "--override-input", "nyxos-overrides", overrides]
 }
 
-/// Build the configuration, then switch to it.
-async fn build_and_switch(config: &Config, emitter: &SignalEmitter<'_>) -> Result<()> {
+/// Build the configuration, then switch to it. Progress lines starting `== ` name the
+/// stage.
+pub async fn build_and_switch(config: &Config, emitter: &SignalEmitter<'_>) -> Result<()> {
     std::fs::create_dir_all(&config.state)?;
     let flake = format!("path:{}#{}", config.flake.display(), config.host);
     let overrides = format!("path:{}", config.overrides.display());
+    let _ = crate::Manager::progress(emitter, "== Building the new system").await;
     run(emitter, &config.state, "nixos-rebuild", &rebuild_args("build", &flake, &overrides)).await?;
+    let _ = crate::Manager::progress(emitter, "== Switching to it").await;
     run(emitter, &config.state, "nixos-rebuild", &rebuild_args("switch", &flake, &overrides)).await
 }
 
 /// Keep the settings the current generation was built from, for rollback.
-fn remember(config: &Config) -> Result<()> {
+pub fn remember(config: &Config) -> Result<()> {
     if let Some(current) = generations::list()?.into_iter().find(|g| g.current) {
         let dir = config.state.join("generations");
         std::fs::create_dir_all(&dir)?;
@@ -80,7 +83,7 @@ fn remember(config: &Config) -> Result<()> {
 }
 
 /// Back to the generation before the current one.
-async fn previous_generation(emitter: &SignalEmitter<'_>, cwd: &Path) -> Result<()> {
+pub async fn previous_generation(emitter: &SignalEmitter<'_>, cwd: &Path) -> Result<()> {
     run(emitter, cwd, "nix-env", &["--profile", PROFILE, "--rollback"]).await?;
     run(emitter, cwd, &format!("{PROFILE}/bin/switch-to-configuration"), &["switch"]).await
 }
@@ -108,32 +111,6 @@ pub async fn apply(config: &Config, changes: &[Change], emitter: &SignalEmitter<
     }
     remember(config)?;
     Ok("Applied".into())
-}
-
-pub async fn update(config: &Config, emitter: &SignalEmitter<'_>) -> Result<String> {
-    let lock = config.flake.join("flake.lock");
-    let saved = std::fs::read(&lock).ok();
-    remember(config)?;
-    let before = generations::current();
-    let flake = config.flake.display().to_string();
-    let pre = snapshots::before("an update", emitter).await;
-    let result = async {
-        run(emitter, &config.state, "nix", &["flake", "update", "--flake", &flake]).await?;
-        build_and_switch(config, emitter).await
-    }
-    .await;
-    snapshots::after(pre, "an update", emitter).await;
-    if let Err(e) = result {
-        if let Some(bytes) = saved {
-            std::fs::write(&lock, bytes)?;
-        }
-        if generations::current() != before {
-            let _ = previous_generation(emitter, &config.state).await;
-        }
-        return Err(anyhow::anyhow!("{e:#}; the update was undone"));
-    }
-    remember(config)?;
-    Ok("Updated".into())
 }
 
 pub async fn rollback(config: &Config, emitter: &SignalEmitter<'_>) -> Result<String> {

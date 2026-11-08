@@ -1,6 +1,6 @@
 [workspace]
 resolver = "3"
-members = ["crates/nyx-config", "crates/nyx-system-proto", "crates/nyx-catalog", "apps/system-manager", "apps/system-cli", "apps/themed", "apps/recovery"]
+members = ["crates/nyx-config", "crates/nyx-system-proto", "crates/nyx-catalog", "crates/nyx-update", "apps/system-manager", "apps/system-cli", "apps/themed", "apps/recovery"]
 
 [workspace.package]
 version = "0.1.0"

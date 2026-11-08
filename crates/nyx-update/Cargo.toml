@@ -1,0 +1,23 @@
+[package]
+name = "nyx-update"
+description = "nyx update: what can be updated on NyxOS, the plan for updating it, and running that plan"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+
+[dependencies]
+nyx-catalog = { path = "../nyx-catalog" }
+nyx-config = { path = "../nyx-config" }
+nyx-system-proto = { path = "../nyx-system-proto", features = ["client"] }
+anyhow.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+toml.workspace = true
+zbus.workspace = true
+tokio.workspace = true
+futures-util = "0.3"
+
+[dev-dependencies]
+tempfile.workspace = true

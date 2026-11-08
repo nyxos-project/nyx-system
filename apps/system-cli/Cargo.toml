@@ -15,7 +15,9 @@ path = "src/main.rs"
 nyx-config = { path = "../../crates/nyx-config" }
 nyx-catalog = { path = "../../crates/nyx-catalog" }
 nyx-system-proto = { path = "../../crates/nyx-system-proto", features = ["client"] }
+nyx-update = { path = "../../crates/nyx-update" }
 anyhow.workspace = true
+serde.workspace = true
 serde_json.workspace = true
 toml.workspace = true
 zbus.workspace = true

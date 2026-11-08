@@ -112,6 +112,23 @@ pub fn restore_inputs(p: &Paths, n: u32) -> Result<Vec<String>> {
         }
         write_atomic(&file, &lock)?;
         done.push(format!("the versions (flake.lock) generation {n} was built with"));
+        // The tools `nyx update NAME` updated on their own; none when it carries none.
+        let file = p.overrides.join("tools.json");
+        let old = std::fs::read(&file).ok();
+        if let Some(old) = &old {
+            write_atomic(&file.with_extension("json.before-recovery"), old)?;
+        }
+        match std::fs::read(p.generation(n).join("etc/nyxos/built-from/tools.json")) {
+            Ok(pins) => {
+                write_atomic(&file, &pins)?;
+                done.push(format!("the tool versions generation {n} was built with"));
+            }
+            Err(_) if old.is_some() => {
+                std::fs::remove_file(&file)?;
+                done.push(format!("the tool versions generation {n} was built with (the channel's)"));
+            }
+            Err(_) => {}
+        }
     }
     Ok(done)
 }
@@ -250,6 +267,23 @@ mod tests {
         symlink(t.path().join("store/gen40-recovery"), t.path().join("store/gen40/specialisation/recovery")).unwrap();
         let list = super::list(&p, &t.path().join("store/gen40-recovery")).unwrap();
         assert!(list[2].running && !list[1].running);
+    }
+
+    #[test]
+    fn going_back_puts_the_tool_versions_back() {
+        let (t, p) = fixture();
+        std::fs::create_dir_all(&p.overrides).unwrap();
+        std::fs::create_dir_all(&p.flake).unwrap();
+        let tools = p.overrides.join("tools.json");
+        std::fs::write(&tools, "{\"claude-code\": {}}").unwrap();
+        // Generation 41 was built from the channel's pins alone.
+        restore_inputs(&p, 41).unwrap();
+        assert!(!tools.exists());
+        assert_eq!(std::fs::read_to_string(p.overrides.join("tools.json.before-recovery")).unwrap(), "{\"claude-code\": {}}");
+        std::fs::write(t.path().join("store/gen41/etc/nyxos/built-from/tools.json"), "{\"codex\": {}}").unwrap();
+        let done = restore_inputs(&p, 41).unwrap();
+        assert_eq!(std::fs::read_to_string(&tools).unwrap(), "{\"codex\": {}}");
+        assert!(done.iter().any(|d| d.contains("tool versions")));
     }
 
     #[test]

@@ -907,6 +907,8 @@ dependencies = [
  "nyx-catalog",
  "nyx-config",
  "nyx-system-proto",
+ "nyx-update",
+ "serde",
  "serde_json",
  "tokio",
  "toml",
@@ -918,8 +920,10 @@ name = "nyx-system-manager"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "libc",
  "nyx-config",
  "nyx-system-proto",
+ "nyx-update",
  "serde",
  "serde_json",
  "tempfile",
@@ -961,6 +965,23 @@ dependencies = [
  "serde_json",
  "tempfile",
  "toml",
+]
+
+[[package]]
+name = "nyx-update"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "futures-util",
+ "nyx-catalog",
+ "nyx-config",
+ "nyx-system-proto",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "tokio",
+ "toml",
+ "zbus",
 ]
 
 [[package]]
