@@ -320,6 +320,70 @@ pub struct SystemSettings {
     /// What the System Manager detected, and the driver choices made for it.
     #[serde(default, skip_serializing_if = "hardware::Hardware::is_empty")]
     pub hardware: hardware::Hardware,
+    /// The system logo, in place of the Nyx mark (`/etc/nyx/logo.svg|png`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub logo: Option<Logo>,
+}
+
+/// A logo image. An SVG's `currentColor` parts take the theme's logo colour; a PNG is
+/// shown as it is.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Logo {
+    pub format: LogoFormat,
+    /// The SVG's text, or the PNG in base64.
+    pub data: String,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum LogoFormat {
+    Svg,
+    Png,
+}
+
+pub const MAX_LOGO_SVG: usize = 512 * 1024;
+pub const MAX_LOGO_PNG: usize = 2 * 1024 * 1024;
+
+/// A logo the system may take: an SVG without scripts, foreign content, entities,
+/// event handlers or references outside itself, or a PNG; each within its size.
+pub fn valid_logo(l: &Logo) -> Result<()> {
+    match l.format {
+        LogoFormat::Png => {
+            ensure!(l.data.len() <= MAX_LOGO_PNG.div_ceil(3) * 4, "the logo is over {} KB", MAX_LOGO_PNG / 1024);
+            ensure!(l.data.bytes().all(|b| b.is_ascii_alphanumeric() || b"+/=".contains(&b)), "the logo isn't base64");
+            // The PNG signature, in base64.
+            ensure!(l.data.starts_with("iVBORw0KGgo"), "the logo isn't a PNG");
+        }
+        LogoFormat::Svg => {
+            ensure!(l.data.len() <= MAX_LOGO_SVG, "the logo is over {} KB", MAX_LOGO_SVG / 1024);
+            let lower = l.data.to_ascii_lowercase();
+            ensure!(lower.contains("<svg"), "the logo isn't an SVG image");
+            for bad in ["<script", "<foreignobject", "<!entity", "<!doctype", "<iframe", "<embed", "<object", "javascript:", "@import"] {
+                ensure!(!lower.contains(bad), "the logo contains {bad}");
+            }
+            let bytes = lower.as_bytes();
+            for (i, _) in lower.match_indices("on") {
+                let before = if i == 0 { b' ' } else { bytes[i - 1] };
+                let end = lower[i + 2..].find(|c: char| !c.is_ascii_alphabetic()).map_or(lower.len(), |n| i + 2 + n);
+                ensure!(
+                    !(before.is_ascii_whitespace() && end > i + 2 && lower[end..].trim_start().starts_with('=')),
+                    "the logo has an event handler"
+                );
+            }
+            for (i, _) in lower.match_indices("href") {
+                if let Some(v) = lower[i + 4..].trim_start().strip_prefix('=') {
+                    let v = v.trim_start().trim_start_matches(['"', '\'']);
+                    ensure!(v.starts_with('#') || v.starts_with("data:image/"), "the logo links outside itself");
+                }
+            }
+            for (i, _) in lower.match_indices("url(") {
+                let v = lower[i + 4..].trim_start().trim_start_matches(['"', '\'']);
+                ensure!(v.starts_with('#'), "the logo refers to something outside itself");
+            }
+        }
+    }
+    Ok(())
 }
 
 fn version() -> u32 {
@@ -346,6 +410,7 @@ impl Default for SystemSettings {
             full_names: BTreeMap::new(),
             mounts: BTreeMap::new(),
             hardware: hardware::Hardware::default(),
+            logo: None,
         }
     }
 }
@@ -392,6 +457,10 @@ pub enum Change {
     },
     LoginTheme {
         value: Option<String>,
+    },
+    /// The system logo; `None` is the Nyx mark.
+    Logo {
+        value: Option<Logo>,
     },
     /// `unfree` names those of `packages` whose license the administrator accepted.
     AddPackages {
@@ -499,6 +568,7 @@ impl Change {
             Change::SystemTheme { value } | Change::BootTheme { value } | Change::LoginTheme { value } => {
                 opt(value, valid_theme, "theme")
             }
+            Change::Logo { value } => value.as_ref().map_or(Ok(()), valid_logo),
             Change::AddPackages { packages, unfree } => {
                 valid_packages(packages)?;
                 for u in unfree {
@@ -589,6 +659,7 @@ impl SystemSettings {
                 Change::SystemTheme { value } => s.theme.system = value.clone(),
                 Change::BootTheme { value } => s.theme.boot = value.clone(),
                 Change::LoginTheme { value } => s.theme.login = value.clone(),
+                Change::Logo { value } => s.logo = value.clone(),
                 Change::AddPackages { packages, unfree } => {
                     s.packages.extend(packages.iter().cloned());
                     s.unfree.extend(unfree.iter().cloned());
@@ -953,6 +1024,30 @@ pub trait System {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn logos_are_checked() {
+        let svg = |data: &str| Logo { format: LogoFormat::Svg, data: data.into() };
+        let ok = svg("<svg viewBox=\"0 0 1 1\"><circle fill=\"currentColor\" r=\"1\"/><rect fill=\"url(#g)\"/></svg>");
+        let s = SystemSettings::default().with(&[Change::Logo { value: Some(ok.clone()) }]).unwrap();
+        assert_eq!(s.logo, Some(ok));
+        assert!(serde_json::to_string(&s).unwrap().contains("\"logo\":{\"format\":\"svg\""));
+        assert_eq!(s.with(&[Change::Logo { value: None }]).unwrap().logo, None);
+        for bad in [
+            "<svg><script/></svg>",
+            "<svg onload=\"x()\"/>",
+            "<svg><image href=\"https://x/a.png\"/></svg>",
+            "<svg fill=\"url(file:///x)\"/>",
+            "<!DOCTYPE svg><svg/>",
+            "plain text",
+        ] {
+            assert!(Change::Logo { value: Some(svg(bad)) }.validate().is_err(), "{bad}");
+        }
+        let png = |data: &str| Change::Logo { value: Some(Logo { format: LogoFormat::Png, data: data.into() }) };
+        assert!(png("iVBORw0KGgoAAAANSUhEUg==").validate().is_ok());
+        assert!(png("R0lGODlh").validate().is_err(), "a GIF isn't a PNG");
+        assert!(png("iVBORw0KGgo$$$").validate().is_err());
+    }
 
     #[test]
     fn changes_are_validated_and_applied() {
