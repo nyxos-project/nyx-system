@@ -158,7 +158,9 @@ fn parse_mise(ls: &str, outdated: &str) -> Vec<UserTool> {
 fn uv_tools(check: bool) -> Vec<UserTool> {
     let mut tools = home_output("uv", &["tool", "list"]).map(|t| parse_uv(&t)).unwrap_or_default();
     if check && !tools.is_empty() {
-        let newer = home_output("uv", &["tool", "list", "--outdated"]).map(|t| parse_uv(&t)).unwrap_or_default();
+        let newer = home_output("uv", &["tool", "list", "--outdated", "--show-version-specifiers"])
+            .map(|t| parse_uv(&t))
+            .unwrap_or_default();
         for t in &mut tools {
             t.update = newer.iter().find(|n| n.name == t.name).and_then(|n| n.update.clone());
         }
@@ -166,7 +168,9 @@ fn uv_tools(check: bool) -> Vec<UserTool> {
     tools
 }
 
-/// `name v1.2 [latest: 1.3]` lines, each followed by `- command` lines.
+/// `name v1.2 [required: >=1] [latest: 1.3]` lines, each followed by `- command` lines.
+/// uv upgrades a tool only within what it was installed with: one installed `==1.2`
+/// has no update to offer, and one with a range gets the newest only if it fits.
 fn parse_uv(text: &str) -> Vec<UserTool> {
     let mut out: Vec<UserTool> = Vec::new();
     for line in text.lines() {
@@ -178,13 +182,19 @@ fn parse_uv(text: &str) -> Vec<UserTool> {
             }
             continue;
         }
-        let mut words = line.split_whitespace();
+        let mut words = line.splitn(3, ' ');
         let (Some(name), Some(version)) = (words.next(), words.next()) else { continue };
         let Some(version) = version.strip_prefix('v') else { continue };
-        let rest: Vec<&str> = words.collect();
-        let update = match rest.as_slice() {
-            ["[latest:", v] => Some(v.trim_end_matches(']').to_string()),
-            _ => None,
+        let rest = words.next().unwrap_or("");
+        let tag = |key: &str| {
+            let start = rest.find(&format!("[{key}: "))? + key.len() + 3;
+            Some(rest[start..].split(']').next()?.trim().to_string())
+        };
+        let update = match (tag("latest"), tag("required")) {
+            (Some(_), Some(spec)) if spec.starts_with("==") => None,
+            (Some(latest), Some(spec)) => Some(format!("{latest} (if {spec} allows)")),
+            (latest, None) => latest,
+            (None, _) => None,
         };
         out.push(UserTool { name: name.to_string(), version: Some(version.to_string()), update, aliases: Vec::new() });
     }
@@ -450,6 +460,11 @@ mod tests {
         assert_eq!(t[0].aliases, vec!["browser", "bu"]);
         assert_eq!((t[1].version.as_deref(), t[1].update.as_deref()), (Some("2.3.0"), None));
         assert!(t[1].aliases.is_empty());
+        let held = parse_uv(
+            "pycowsay v0.0.0.1 [required: ==0.0.0.1] [latest: 0.0.0.2]\n- pycowsay\nruff v0.9.0 [required: >=0.9,<1] [latest: 1.2.0]\n",
+        );
+        assert_eq!(held[0].update, None, "uv won't move a tool installed ==");
+        assert_eq!(held[1].update.as_deref(), Some("1.2.0 (if >=0.9,<1 allows)"));
     }
 
     #[test]
