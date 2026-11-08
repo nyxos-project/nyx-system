@@ -112,10 +112,11 @@ nyxos `.github/workflows/tool-updates.yml` runs daily (and by hand):
 PRs are never merged automatically. A merged PR lands on `main` (testing); `stable`
 moves when the known-good process promotes it, and that's when stable machines see it.
 
-`publish` needs the `TOOLS_BOT_TOKEN` secret (a GitHub App or fine-grained token for
-nyxos with contents, pull requests and issues): PRs opened with `GITHUB_TOKEN` don't run
-CI. Cachix doesn't push from `tool-update/*` branches, so upstream binaries reach the
-cache only after review.
+`publish` uses the run's own token, so there's no secret to keep: the repository allows
+Actions to create pull requests, and since a pull request opened that way starts no CI
+by itself, `publish` starts CI on the branch (workflow_dispatch) and its result shows on
+the pull request. Cachix doesn't push from `tool-update/*` branches, so upstream
+binaries reach the cache only after review.
 
 ## `nyx update`
 
