@@ -13,6 +13,7 @@ use nyx_system_proto::{HistoryEntry, TOOLS_FILE, ToolPin, UpgradeRequest, Upgrad
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
+use std::time::Instant;
 use zbus::object_server::SignalEmitter;
 
 /// Below this much free space in /nix an update doesn't start.
@@ -192,7 +193,12 @@ pub async fn upgrade(config: &Config, req: &UpgradeRequest, emitter: &SignalEmit
         targets: if req.channel { vec!["system".into()] } else { req.tools.clone() },
         ..HistoryEntry::default()
     };
-    let result = run_upgrade(config, req, emitter).await;
+    let start = Instant::now();
+    let mut result = run_upgrade(config, req, &mut entry.seconds, emitter).await;
+    entry.seconds.insert("total".into(), start.elapsed().as_secs());
+    if let Ok(r) = &mut result {
+        r.seconds.clone_from(&entry.seconds);
+    }
     match &result {
         Ok(r) => {
             entry.result = if r.generation_after == r.generation_before { "current" } else { "updated" }.into();
@@ -214,7 +220,15 @@ pub async fn upgrade(config: &Config, req: &UpgradeRequest, emitter: &SignalEmit
     result
 }
 
-async fn run_upgrade(config: &Config, req: &UpgradeRequest, emitter: &SignalEmitter<'_>) -> Result<UpgradeResult> {
+async fn run_upgrade(
+    config: &Config,
+    req: &UpgradeRequest,
+    seconds: &mut BTreeMap<String, u64>,
+    emitter: &SignalEmitter<'_>,
+) -> Result<UpgradeResult> {
+    let mut timed = |stage: &str, since: Instant| {
+        seconds.insert(stage.to_string(), since.elapsed().as_secs());
+    };
     std::fs::create_dir_all(&config.state)?;
     if let Some(free) = free_space(Path::new("/nix")) {
         ensure!(
@@ -227,7 +241,10 @@ async fn run_upgrade(config: &Config, req: &UpgradeRequest, emitter: &SignalEmit
         serde_json::Map::new()
     } else {
         stage(emitter, "Fetching the tools' newest pins from the channel").await;
-        let pins = head_pins(config, &req.tools)?;
+        let t = Instant::now();
+        let pins = head_pins(config, &req.tools);
+        timed("pins", t);
+        let pins = pins?;
         if pins.is_empty() {
             return Ok(UpgradeResult {
                 summary: "Already up to date".into(),
@@ -258,7 +275,10 @@ async fn run_upgrade(config: &Config, req: &UpgradeRequest, emitter: &SignalEmit
         if req.channel {
             stage(emitter, "Downloading the newest channel").await;
             let flake = config.flake.display().to_string();
-            run(emitter, &config.state, "nix", &["flake", "update", "--flake", &flake]).await?;
+            let t = Instant::now();
+            let r = run(emitter, &config.state, "nix", &["flake", "update", "--flake", &flake]).await;
+            timed("download", t);
+            r?;
             // The channel brings every tool's pin.
             let _ = std::fs::remove_file(tools_file(config));
         } else {
@@ -270,7 +290,15 @@ async fn run_upgrade(config: &Config, req: &UpgradeRequest, emitter: &SignalEmit
             std::fs::write(&tmp, serde_json::to_string_pretty(&local)? + "\n")?;
             std::fs::rename(tmp, tools_file(config))?;
         }
-        rebuild::build_and_switch(config, emitter).await
+        // Building also downloads what the new system needs.
+        let t = Instant::now();
+        let r = rebuild::build(config, emitter).await;
+        timed("build", t);
+        r?;
+        let t = Instant::now();
+        let r = rebuild::switch(config, emitter).await;
+        timed("switch", t);
+        r
     }
     .await;
     snapshots::after(pre, what, emitter).await;
@@ -306,7 +334,32 @@ async fn run_upgrade(config: &Config, req: &UpgradeRequest, emitter: &SignalEmit
         reboot: needs_reboot(),
         restart: replaced_programs(&before),
         changes,
+        seconds: BTreeMap::new(),
     })
+}
+
+/// Going back a generation, recorded in the history like an update.
+pub async fn rollback(config: &Config, emitter: &SignalEmitter<'_>) -> Result<String> {
+    let before = generations::current();
+    let start = Instant::now();
+    let result = rebuild::rollback(config, emitter).await;
+    let entry = HistoryEntry {
+        time: now(),
+        scope: "system".into(),
+        request: "rollback".into(),
+        targets: vec!["system".into()],
+        generation_before: before,
+        generation_after: generations::current(),
+        result: if result.is_ok() { "rolled-back" } else { "failed" }.into(),
+        reboot: result.is_ok() && needs_reboot(),
+        error: result.as_ref().err().map(|e| format!("{e:#}")),
+        seconds: BTreeMap::from([("total".to_string(), start.elapsed().as_secs())]),
+        ..HistoryEntry::default()
+    };
+    if let Err(e) = nyx_system_proto::append_history(&history_file(config), &entry) {
+        eprintln!("the update history couldn't be written: {e:#}");
+    }
+    result
 }
 
 #[cfg(test)]

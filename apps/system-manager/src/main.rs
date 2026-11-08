@@ -424,7 +424,7 @@ impl Manager {
         self.touch();
         let uid = authorize(conn, &header, action::ROLLBACK).await?;
         let _guard = self.busy.try_lock().map_err(|_| failed("another system change is running"))?;
-        let result = rebuild::rollback(&self.config, &emitter).await;
+        let result = upgrade::rollback(&self.config, &emitter).await;
         audit(uid, action::ROLLBACK, "rollback", result.as_ref().map(String::as_str).unwrap_or("failed"));
         self.touch();
         result.map_err(failed)

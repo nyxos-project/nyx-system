@@ -20,7 +20,9 @@ pub const USAGE: &str = "  nyx-system update [TARGET...] [--dry-run] [--yes] [--
   nyx-system update status [--notify] [--json]
                                           What has updates (--notify: as a notification,
                                           as the daily check does)
-  nyx-system update history [N] [--json]  What was updated, newest first";
+  nyx-system update history [N] [--json]  What was updated, newest first
+  nyx-system update report [N] [--json]   How the last N (200) updates went: failures,
+                                          rollbacks, restarts, typical times";
 
 #[derive(Default)]
 struct Flags {
@@ -68,6 +70,7 @@ pub async fn run(args: &[&str]) -> Result<()> {
         }
         ["status", rest @ ..] => status(rest).await,
         ["history", rest @ ..] => history(rest).await,
+        ["report", rest @ ..] => report(rest).await,
         _ => update(args).await,
     }
 }
@@ -123,14 +126,17 @@ async fn update(args: &[&str]) -> Result<()> {
     if !f.json {
         eprintln!("Checking what's new…");
     }
+    let started = std::time::Instant::now();
     let snapshot = nyx_update::probe::probe(nyx_update::probe::Options {
         check: true,
         firmware: (settings.firmware && wants_firmware(&names)) || names.iter().any(|n| n == "firmware"),
     });
+    let check_seconds = started.elapsed().as_secs();
     let targets = nyx_update::targets(&snapshot);
     let refs: Vec<&str> = names.iter().map(String::as_str).collect();
     let picks = nyx_update::resolve_installed(&snapshot, &targets, &refs)?;
     let mut plan = nyx_update::plan(&snapshot, &targets, &picks, &request);
+    plan.check_seconds = check_seconds;
 
     if f.json && f.dry_run {
         println!("{}", serde_json::to_string_pretty(&plan)?);
@@ -144,6 +150,7 @@ async fn update(args: &[&str]) -> Result<()> {
     }
     if plan.suggest_system && !f.yes && confirm("Update the system instead?")? {
         plan = system_plan(&snapshot, &targets, &request);
+        plan.check_seconds = check_seconds;
         print_plan(&plan);
     }
     if plan.is_empty() {
@@ -260,18 +267,63 @@ async fn status(args: &[&str]) -> Result<()> {
     Ok(())
 }
 
-async fn history(args: &[&str]) -> Result<()> {
-    let (f, rest) = flags(args)?;
-    let limit: usize = match rest.as_slice() {
-        [] => 20,
-        [n] => n.parse().map_err(|_| anyhow::anyhow!("N is a number"))?,
-        _ => bail!("nyx-system update history [N]"),
-    };
+/// The last `limit` entries of the system's history and the user's, newest first.
+async fn entries(limit: usize) -> Vec<HistoryEntry> {
     let system: Vec<HistoryEntry> = match crate::proxy().await {
         Ok(p) => p.history(limit as u32).await.ok().and_then(|j| serde_json::from_str(&j).ok()).unwrap_or_default(),
         Err(_) => Vec::new(),
     };
-    let list = nyx_update::run::merged_history(system, limit);
+    nyx_update::run::merged_history(system, limit)
+}
+
+fn limit(rest: &[String], default: usize, usage: &str) -> Result<usize> {
+    match rest {
+        [] => Ok(default),
+        [n] => n.parse().map_err(|_| anyhow::anyhow!("N is a number")),
+        _ => bail!("{usage}"),
+    }
+}
+
+async fn report(args: &[&str]) -> Result<()> {
+    let (f, rest) = flags(args)?;
+    let r = nyx_update::report(&entries(limit(&rest, 200, "nyx-system update report [N]")?).await);
+    if f.json {
+        println!("{}", serde_json::to_string_pretty(&r)?);
+        return Ok(());
+    }
+    if r.entries == 0 {
+        println!("Nothing has been updated yet.");
+        return Ok(());
+    }
+    println!(
+        "The last {} update{} (since {}):",
+        r.entries,
+        if r.entries == 1 { "" } else { "s" },
+        nyx_update::date(r.since.unwrap_or(0))
+    );
+    let rate = r.failure_rate().map(|p| format!(" ({p}% failed)")).unwrap_or_default();
+    println!(
+        "  System      {} updated, {} failed{rate}, {} already current",
+        r.system_updated, r.system_failed, r.system_current
+    );
+    println!("  Going back  {} time{}, {} failed", r.rollbacks, if r.rollbacks == 1 { "" } else { "s" }, r.rollbacks_failed);
+    println!("  Your own    {} updated, {} failed (Nix profile, Flatpaks, mise, uv, firmware)", r.user_updated, r.user_failed);
+    println!("  Restarts    {} needed", r.restarts);
+    let order = ["check", "pins", "download", "build", "switch", "total"];
+    let typical: Vec<String> =
+        order.iter().filter_map(|s| r.median.get(*s).map(|v| format!("{s} {}", nyx_update::duration(*v)))).collect();
+    if !typical.is_empty() {
+        println!("  Typical     {}", typical.join(" · "));
+    }
+    if let Some((request, time, secs)) = &r.longest {
+        println!("  Longest     {} ({request}, {})", nyx_update::duration(*secs), nyx_update::date(*time));
+    }
+    Ok(())
+}
+
+async fn history(args: &[&str]) -> Result<()> {
+    let (f, rest) = flags(args)?;
+    let list = entries(limit(&rest, 20, "nyx-system update history [N]")?).await;
     if f.json {
         println!("{}", serde_json::to_string_pretty(&list)?);
         return Ok(());
@@ -284,7 +336,8 @@ async fn history(args: &[&str]) -> Result<()> {
             (Some(a), Some(b)) if a != b => format!("  generation {a} → {b}"),
             _ => String::new(),
         };
-        println!("{}  {:<8} {:<7} {}{generations}", nyx_update::date(e.time), e.scope, e.result, e.request);
+        let took = e.seconds.get("total").map(|s| format!("  ({})", nyx_update::duration(*s))).unwrap_or_default();
+        println!("{}  {:<8} {:<11} {}{generations}{took}", nyx_update::date(e.time), e.scope, e.result, e.request);
         for c in e.changes.iter().take(5) {
             println!("    {}: {} → {}", c.name, c.from, c.to);
         }

@@ -93,13 +93,14 @@ pub async fn execute(plan: &Plan, firmware: bool, line: &mut dyn FnMut(&str)) ->
     let _lock = lock()?;
     let mut out = Outcome::default();
     for step in &plan.steps {
+        let start = std::time::Instant::now();
         let result = match step {
             Step::System { channel, tools } => system(plan, *channel, tools, line).await,
-            Step::Profile { names } => user_step(plan, step, profile(names, line)),
-            Step::Flatpak { apps } => user_step(plan, step, flatpak(apps, line)),
-            Step::Mise { tools } => user_step(plan, step, mise(tools, line)),
-            Step::UvTools { tools } => user_step(plan, step, uv(tools, line)),
-            Step::Firmware { devices } if firmware => user_step(plan, step, fwupd(devices, line)),
+            Step::Profile { names } => user_step(plan, step, profile(names, line), start),
+            Step::Flatpak { apps } => user_step(plan, step, flatpak(apps, line), start),
+            Step::Mise { tools } => user_step(plan, step, mise(tools, line), start),
+            Step::UvTools { tools } => user_step(plan, step, uv(tools, line), start),
+            Step::Firmware { devices } if firmware => user_step(plan, step, fwupd(devices, line), start),
             Step::Firmware { .. } => Ok((String::from("Firmware wasn't updated: it's only updated when you agree to it."), None)),
         };
         let outcome = match result {
@@ -151,8 +152,13 @@ async fn system(
     Ok((result.summary.clone(), Some(result)))
 }
 
-/// Record a user step in the user's history.
-fn user_step(plan: &Plan, step: &Step, result: Result<String>) -> Result<(String, Option<UpgradeResult>)> {
+/// Record a user step in the user's history, with how long it and the check took.
+fn user_step(
+    plan: &Plan,
+    step: &Step,
+    result: Result<String>,
+    start: std::time::Instant,
+) -> Result<(String, Option<UpgradeResult>)> {
     let (targets, scope) = match step {
         Step::Profile { names } if names.is_empty() => (vec!["nix profile".to_string()], "user"),
         Step::Profile { names } => (names.clone(), "user"),
@@ -172,6 +178,10 @@ fn user_step(plan: &Plan, step: &Step, result: Result<String>) -> Result<(String
         result: if result.is_ok() { "updated" } else { "failed" }.into(),
         reboot: matches!(step, Step::Firmware { .. }) && plan.may_restart && result.is_ok(),
         error: result.as_ref().err().map(|e| format!("{e:#}")),
+        seconds: std::collections::BTreeMap::from([
+            ("check".to_string(), plan.check_seconds),
+            ("total".to_string(), start.elapsed().as_secs()),
+        ]),
         ..HistoryEntry::default()
     };
     let _ = nyx_system_proto::append_history(&user_history(), &entry);

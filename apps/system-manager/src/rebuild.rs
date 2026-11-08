@@ -62,13 +62,25 @@ fn rebuild_args<'a>(verb: &'a str, flake: &'a str, overrides: &'a str) -> [&'a s
 /// Build the configuration, then switch to it. Progress lines starting `== ` name the
 /// stage.
 pub async fn build_and_switch(config: &Config, emitter: &SignalEmitter<'_>) -> Result<()> {
+    build(config, emitter).await?;
+    switch(config, emitter).await
+}
+
+/// `nixos-rebuild VERB` for this machine, its stage named first.
+async fn rebuild(config: &Config, verb: &str, stage: &str, emitter: &SignalEmitter<'_>) -> Result<()> {
     std::fs::create_dir_all(&config.state)?;
     let flake = format!("path:{}#{}", config.flake.display(), config.host);
     let overrides = format!("path:{}", config.overrides.display());
-    let _ = crate::Manager::progress(emitter, "== Building the new system").await;
-    run(emitter, &config.state, "nixos-rebuild", &rebuild_args("build", &flake, &overrides)).await?;
-    let _ = crate::Manager::progress(emitter, "== Switching to it").await;
-    run(emitter, &config.state, "nixos-rebuild", &rebuild_args("switch", &flake, &overrides)).await
+    let _ = crate::Manager::progress(emitter, &format!("== {stage}")).await;
+    run(emitter, &config.state, "nixos-rebuild", &rebuild_args(verb, &flake, &overrides)).await
+}
+
+pub async fn build(config: &Config, emitter: &SignalEmitter<'_>) -> Result<()> {
+    rebuild(config, "build", "Building the new system", emitter).await
+}
+
+pub async fn switch(config: &Config, emitter: &SignalEmitter<'_>) -> Result<()> {
+    rebuild(config, "switch", "Switching to it", emitter).await
 }
 
 /// Keep the settings the current generation was built from, for rollback.

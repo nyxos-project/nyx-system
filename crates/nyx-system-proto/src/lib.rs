@@ -359,7 +359,9 @@ pub fn valid_logo(l: &Logo) -> Result<()> {
             ensure!(l.data.len() <= MAX_LOGO_SVG, "the logo is over {} KB", MAX_LOGO_SVG / 1024);
             let lower = l.data.to_ascii_lowercase();
             ensure!(lower.contains("<svg"), "the logo isn't an SVG image");
-            for bad in ["<script", "<foreignobject", "<!entity", "<!doctype", "<iframe", "<embed", "<object", "javascript:", "@import"] {
+            for bad in
+                ["<script", "<foreignobject", "<!entity", "<!doctype", "<iframe", "<embed", "<object", "javascript:", "@import"]
+            {
                 ensure!(!lower.contains(bad), "the logo contains {bad}");
             }
             let bytes = lower.as_bytes();
@@ -909,6 +911,9 @@ pub struct UpgradeResult {
     pub restart: Vec<String>,
     #[serde(default)]
     pub changes: Vec<VersionChange>,
+    /// How long each stage took ([`HistoryEntry::seconds`]).
+    #[serde(default)]
+    pub seconds: BTreeMap<String, u64>,
 }
 
 /// One entry in the update history (`/var/lib/nyx-system/history.jsonl` for the
@@ -937,6 +942,10 @@ pub struct HistoryEntry {
     pub restart: Vec<String>,
     #[serde(default)]
     pub error: Option<String>,
+    /// How long each stage took, in seconds: `check` (finding what's new), `pins`,
+    /// `download`, `build`, `switch`, and `total`.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub seconds: BTreeMap<String, u64>,
 }
 
 /// History files keep this many entries.

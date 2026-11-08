@@ -587,6 +587,9 @@ pub struct Plan {
     /// The firmware step was only implied (`nyx update`): ask before it, and leave it
     /// out of an unattended run.
     pub firmware_implied: bool,
+    /// How long finding what's new took, for the history.
+    #[serde(default)]
+    pub check_seconds: u64,
 }
 
 impl Plan {
@@ -842,6 +845,81 @@ pub fn status(s: &Snapshot, targets: &[Target]) -> Status {
     }
     st.notes.extend(doubles(targets));
     st
+}
+
+/// How updates have gone, from the history: `nyx update report`.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Report {
+    pub entries: usize,
+    /// The oldest entry looked at.
+    pub since: Option<i64>,
+    pub system_updated: usize,
+    pub system_failed: usize,
+    pub system_current: usize,
+    pub rollbacks: usize,
+    pub rollbacks_failed: usize,
+    pub user_updated: usize,
+    pub user_failed: usize,
+    pub restarts: usize,
+    /// The typical (median) seconds of each stage: `check`, `pins`, `download`, `build`,
+    /// `switch`, `total` (of system updates that worked).
+    pub median: BTreeMap<String, u64>,
+    /// The longest system update: its request, when, and seconds.
+    pub longest: Option<(String, i64, u64)>,
+}
+
+impl Report {
+    /// Failed system updates out of those that ran, in percent.
+    pub fn failure_rate(&self) -> Option<u64> {
+        let ran = self.system_updated + self.system_failed;
+        (ran > 0).then(|| (self.system_failed * 100 + ran / 2) as u64 / ran as u64)
+    }
+}
+
+pub fn report(entries: &[nyx_system_proto::HistoryEntry]) -> Report {
+    let mut r = Report { entries: entries.len(), since: entries.iter().map(|e| e.time).min(), ..Report::default() };
+    let mut stages: BTreeMap<String, Vec<u64>> = BTreeMap::new();
+    for e in entries {
+        match (e.scope.as_str(), e.result.as_str(), e.request.as_str()) {
+            ("system", "failed", "rollback") => r.rollbacks_failed += 1,
+            ("system", _, "rollback") => r.rollbacks += 1,
+            ("system", "failed", _) => r.system_failed += 1,
+            ("system", "current", _) => r.system_current += 1,
+            ("system", _, _) => r.system_updated += 1,
+            (_, "failed", _) => r.user_failed += 1,
+            _ => r.user_updated += 1,
+        }
+        r.restarts += usize::from(e.reboot);
+        let system_update = e.scope == "system" && e.result == "updated";
+        for (stage, secs) in &e.seconds {
+            if stage == "check" || system_update {
+                stages.entry(stage.clone()).or_default().push(*secs);
+            }
+        }
+        if let (true, Some(total)) = (system_update, e.seconds.get("total"))
+            && r.longest.as_ref().is_none_or(|l| *total > l.2)
+        {
+            r.longest = Some((e.request.clone(), e.time, *total));
+        }
+    }
+    r.median = stages
+        .into_iter()
+        .map(|(stage, mut v)| {
+            v.sort_unstable();
+            (stage, v[v.len() / 2])
+        })
+        .collect();
+    r
+}
+
+/// `4m 12s`.
+pub fn duration(secs: u64) -> String {
+    match secs {
+        0..60 => format!("{secs}s"),
+        60..3600 => format!("{}m {}s", secs / 60, secs % 60),
+        _ => format!("{}h {}m", secs / 3600, secs % 3600 / 60),
+    }
 }
 
 #[cfg(test)]

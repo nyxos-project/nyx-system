@@ -129,7 +129,8 @@ nyx update NAME…           what NAME is, wherever it comes from
 nyx update … --dry-run     the plan only
 nyx update … --yes         don't ask
 nyx update … --json        the plan or result as JSON
-nyx update history         what was updated, when, and how it went
+nyx update history         what was updated, when, how long it took and how it went
+nyx update report          failures, rollbacks, restarts and typical times
 nyx update status          what's available (--notify: as a notification)
 ```
 
@@ -165,7 +166,15 @@ itself.
 System steps: `/var/lib/nyx-system/history.jsonl` (the manager's; last 200). User steps:
 `~/.local/state/nyx/update-history.jsonl` (last 200). `nyx update history` shows both.
 Each record has the time, the request, the targets, old and new versions, the
-generation before and after, the result, whether a restart is needed and the error.
+generation before and after, the result, whether a restart is needed, the error, and how
+long each stage took: `check` (finding what's new), `pins`, `download` (the channel),
+`build` (which also fetches what the new system needs), `switch` and `total`. Going back
+a generation is recorded too (`rolled-back`).
+
+`nyx update report [N]` reads the last N (200) records: system updates that worked,
+failed (and the failure rate) or found nothing new, rollbacks and whether they worked,
+the user's own updates, restarts needed, the typical (median) time of each stage, and the
+longest update. `--json` gives the same.
 
 ## Checking automatically
 

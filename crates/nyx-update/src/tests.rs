@@ -240,6 +240,42 @@ fn status_lists_what_has_news() {
 }
 
 #[test]
+fn the_report_counts_and_times_updates() {
+    use nyx_system_proto::HistoryEntry;
+    let e = |time: i64, scope: &str, result: &str, request: &str, secs: &[(&str, u64)]| HistoryEntry {
+        time,
+        scope: scope.into(),
+        result: result.into(),
+        request: request.into(),
+        reboot: result == "updated" && scope == "system" && time == 3,
+        seconds: secs.iter().map(|(k, v)| (k.to_string(), *v)).collect(),
+        ..HistoryEntry::default()
+    };
+    let r = report(&[
+        e(1, "system", "updated", "nyx update", &[("download", 40), ("build", 300), ("switch", 30), ("total", 370)]),
+        e(2, "system", "updated", "nyx update claude", &[("pins", 2), ("build", 60), ("switch", 20), ("total", 82)]),
+        e(3, "system", "updated", "nyx update system", &[("download", 50), ("build", 900), ("switch", 40), ("total", 990)]),
+        e(4, "system", "failed", "nyx update", &[("download", 45), ("build", 120), ("total", 165)]),
+        e(5, "system", "current", "update", &[("total", 30)]),
+        e(6, "system", "rolled-back", "rollback", &[("total", 25)]),
+        e(7, "user", "updated", "nyx update tools", &[("check", 9), ("total", 12)]),
+        e(8, "firmware", "failed", "nyx update firmware", &[("check", 11), ("total", 40)]),
+    ]);
+    assert_eq!((r.entries, r.since), (8, Some(1)));
+    assert_eq!((r.system_updated, r.system_failed, r.system_current), (3, 1, 1));
+    assert_eq!((r.rollbacks, r.rollbacks_failed, r.user_updated, r.user_failed), (1, 0, 1, 1));
+    assert_eq!(r.failure_rate(), Some(25));
+    assert_eq!(r.restarts, 1);
+    // Medians of the system updates that worked, and of every check.
+    assert_eq!(r.median["build"], 300);
+    assert_eq!(r.median["total"], 370);
+    assert_eq!(r.median["check"], 11);
+    assert_eq!(r.longest, Some(("nyx update system".into(), 3, 990)));
+    assert_eq!(report(&[]), Report::default());
+    assert_eq!((duration(42), duration(252), duration(7260)), ("42s".into(), "4m 12s".into(), "2h 1m".into()));
+}
+
+#[test]
 fn dates_are_civil() {
     assert_eq!(date(0), "1970-01-01");
     assert_eq!(date(1_794_009_600), "2026-11-07");
