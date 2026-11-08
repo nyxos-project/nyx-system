@@ -3,7 +3,7 @@
 //! the user's Nix profile and Flatpaks, and fwupd's devices. With `check`, also what's
 //! available: the head of the channel (and its tool pins), Flatpak updates and firmware.
 
-use crate::{Channel, ChannelApp, Device, Firmware, Flatpak, ProfileElement, Rev, Snapshot};
+use crate::{Channel, ChannelApp, Device, Firmware, Flatpak, ProfileElement, Rev, Snapshot, UserTool};
 use anyhow::{Context, Result, bail};
 use nyx_catalog::{Catalog, Installed};
 use nyx_system_proto::{SystemSettings, TOOLS_FILE, ToolPin};
@@ -105,8 +105,90 @@ pub fn probe(opts: Options) -> Snapshot {
     }
 
     let firmware = if opts.check && opts.firmware { firmware() } else { Firmware::NotChecked };
+    let (mise, uv_tools) = (mise_tools(opts.check), uv_tools(opts.check));
 
-    Snapshot { channel, tools, head_tools, tool_aliases, apps, profile, flatpaks, firmware, checked: opts.check }
+    Snapshot { channel, tools, head_tools, tool_aliases, apps, profile, flatpaks, firmware, mise, uv_tools, checked: opts.check }
+}
+
+/// A command's output, run in the home folder (so mise reads the user's own config, not
+/// a project's), or nothing when it isn't installed or fails.
+fn home_output(program: &str, args: &[&str]) -> Option<String> {
+    let home = std::env::var_os("HOME")?;
+    let out = Command::new(program).args(args).current_dir(home).stdin(std::process::Stdio::null()).output().ok()?;
+    out.status.success().then(|| String::from_utf8_lossy(&out.stdout).into_owned())
+}
+
+/// The tools the user's mise config asks for and has installed, and with `check`, the
+/// newer versions that config allows.
+fn mise_tools(check: bool) -> Vec<UserTool> {
+    let Some(ls) = home_output("mise", &["ls", "--current", "--json"]) else { return Vec::new() };
+    let outdated = if check { home_output("mise", &["outdated", "--json"]).unwrap_or_default() } else { String::new() };
+    parse_mise(&ls, &outdated)
+}
+
+fn parse_mise(ls: &str, outdated: &str) -> Vec<UserTool> {
+    #[derive(Deserialize)]
+    struct Installed {
+        version: String,
+        #[serde(default)]
+        installed: bool,
+    }
+    #[derive(Deserialize)]
+    struct Outdated {
+        current: Option<String>,
+        latest: Option<String>,
+    }
+    let installed: BTreeMap<String, Vec<Installed>> = serde_json::from_str(ls).unwrap_or_default();
+    let outdated: BTreeMap<String, Outdated> = serde_json::from_str(outdated).unwrap_or_default();
+    installed
+        .into_iter()
+        .filter_map(|(name, versions)| {
+            let version = versions.into_iter().find(|v| v.installed)?.version;
+            let update =
+                outdated.get(&name).filter(|o| o.current.is_some() && o.latest != o.current).and_then(|o| o.latest.clone());
+            // `github:charmbracelet/crush` answers to `crush` too.
+            let short = name.rsplit(['/', ':']).next().unwrap_or(&name).to_string();
+            let aliases = if short == name { Vec::new() } else { vec![short] };
+            Some(UserTool { name, version: Some(version), update, aliases })
+        })
+        .collect()
+}
+
+/// `uv tool list` (with `--outdated`, the newer version each has).
+fn uv_tools(check: bool) -> Vec<UserTool> {
+    let mut tools = home_output("uv", &["tool", "list"]).map(|t| parse_uv(&t)).unwrap_or_default();
+    if check && !tools.is_empty() {
+        let newer = home_output("uv", &["tool", "list", "--outdated"]).map(|t| parse_uv(&t)).unwrap_or_default();
+        for t in &mut tools {
+            t.update = newer.iter().find(|n| n.name == t.name).and_then(|n| n.update.clone());
+        }
+    }
+    tools
+}
+
+/// `name v1.2 [latest: 1.3]` lines, each followed by `- command` lines.
+fn parse_uv(text: &str) -> Vec<UserTool> {
+    let mut out: Vec<UserTool> = Vec::new();
+    for line in text.lines() {
+        if let Some(cmd) = line.strip_prefix("- ") {
+            if let Some(t) = out.last_mut()
+                && *cmd != t.name
+            {
+                t.aliases.push(cmd.trim().to_string());
+            }
+            continue;
+        }
+        let mut words = line.split_whitespace();
+        let (Some(name), Some(version)) = (words.next(), words.next()) else { continue };
+        let Some(version) = version.strip_prefix('v') else { continue };
+        let rest: Vec<&str> = words.collect();
+        let update = match rest.as_slice() {
+            ["[latest:", v] => Some(v.trim_end_matches(']').to_string()),
+            _ => None,
+        };
+        out.push(UserTool { name: name.to_string(), version: Some(version.to_string()), update, aliases: Vec::new() });
+    }
+    out
 }
 
 fn title(name: &str) -> String {
@@ -338,6 +420,36 @@ mod tests {
         let (rev, path) = parse_prefetch(&json).unwrap();
         assert_eq!(rev.rev, "9f00ba1");
         assert_eq!(read_pins(&path.join(SOURCES)).unwrap()["claude-code"].version, "2.1.311");
+    }
+
+    #[test]
+    fn mise_tools_and_their_news() {
+        let ls = r#"{
+          "node": [{"version": "22.1.0", "requested_version": "22", "installed": true, "active": true}],
+          "github:charmbracelet/crush": [{"version": "0.99.0", "installed": true}],
+          "amp": [{"version": "0.0.1", "installed": false}]
+        }"#;
+        let outdated = r#"{
+          "github:charmbracelet/crush": {"name": "github:charmbracelet/crush", "requested": "latest", "current": "0.99.0", "latest": "0.100.0"},
+          "amp": {"current": null, "latest": "0.0.2"}
+        }"#;
+        let t = parse_mise(ls, outdated);
+        assert_eq!(t.len(), 2, "amp isn't installed");
+        let crush = t.iter().find(|t| t.name == "github:charmbracelet/crush").unwrap();
+        assert_eq!((crush.update.as_deref(), crush.aliases.as_slice()), (Some("0.100.0"), &["crush".to_string()][..]));
+        assert!(t.iter().any(|t| t.name == "node" && t.update.is_none() && t.aliases.is_empty()));
+        assert!(parse_mise("not json", "").is_empty());
+    }
+
+    #[test]
+    fn uv_tools_and_their_news() {
+        let text = "browser-use v0.13.10 [latest: 0.13.14]\n- browser\n- browser-use\n- bu\ntrafilatura v2.3.0\n- trafilatura\n";
+        let t = parse_uv(text);
+        assert_eq!(t.len(), 2);
+        assert_eq!(t[0].update.as_deref(), Some("0.13.14"));
+        assert_eq!(t[0].aliases, vec!["browser", "bu"]);
+        assert_eq!((t[1].version.as_deref(), t[1].update.as_deref()), (Some("2.3.0"), None));
+        assert!(t[1].aliases.is_empty());
     }
 
     #[test]

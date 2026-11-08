@@ -13,7 +13,8 @@ use std::io::IsTerminal;
 pub const USAGE: &str = "  nyx-system update [TARGET...] [--dry-run] [--yes] [--json]
                                           Update everything, or: system (NixOS, Nyx apps),
                                           apps (Flatpaks, your Nix profile), tools
-                                          (coding agents), firmware, or one thing by
+                                          (coding agents, your mise and uv tools),
+                                          firmware, or one thing by
                                           name (claude, codex, firefox...). Plans
                                           first and asks; --dry-run only plans
   nyx-system update status [--notify] [--json]

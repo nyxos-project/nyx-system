@@ -5,8 +5,9 @@
 //!   System Manager, which updates the system's flake and rebuilds.
 //! - **Tools** NyxOS packages from pins (coding agents and the like), one at a time, by
 //!   the System Manager copying a tool's pin from the head of the channel.
-//! - The user's **Nix profile** (`nix profile upgrade`) and **Flatpaks**
-//!   (`flatpak update --user`), as the user.
+//! - The user's **Nix profile** (`nix profile upgrade`), **Flatpaks**
+//!   (`flatpak update --user`), **mise** tools (`mise upgrade`) and **uv** tools
+//!   (`uv tool upgrade`), as the user.
 //! - **Firmware** through fwupd, never without asking.
 //!
 //! [`Snapshot`] is what's on the machine and what's available ([`probe`] looks);
@@ -68,6 +69,10 @@ pub enum Provider {
     Profile,
     Flatpak,
     Firmware,
+    /// A tool or language the user installed with mise (their global mise config).
+    Mise,
+    /// A Python tool the user installed with `uv tool install`.
+    UvTool,
 }
 
 /// What finishing an update of it takes.
@@ -199,6 +204,18 @@ pub struct Flatpak {
     pub aliases: Vec<String>,
 }
 
+/// A tool the user installed with mise or uv.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct UserTool {
+    /// mise's name for it (`node`, `github:charmbracelet/crush`), or the uv package.
+    pub name: String,
+    pub version: Option<String>,
+    /// The version an update brings, once checked.
+    pub update: Option<String>,
+    /// Its short name and the commands it installs.
+    pub aliases: Vec<String>,
+}
+
 /// A device fwupd can update.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -242,6 +259,11 @@ pub struct Snapshot {
     pub profile: Vec<ProfileElement>,
     pub flatpaks: Vec<Flatpak>,
     pub firmware: Firmware,
+    /// What the user installed with mise, and with `uv tool install`.
+    #[serde(default)]
+    pub mise: Vec<UserTool>,
+    #[serde(default)]
+    pub uv_tools: Vec<UserTool>,
     /// Whether availability was checked (over the network).
     pub checked: bool,
 }
@@ -330,6 +352,24 @@ pub fn targets(s: &Snapshot) -> Vec<Target> {
             needs_channel: false,
             key: f.id.clone(),
         });
+    }
+    for (provider, tools) in [(Provider::Mise, &s.mise), (Provider::UvTool, &s.uv_tools)] {
+        for t in tools {
+            out.push(Target {
+                id: t.name.clone(),
+                name: t.name.clone(),
+                category: Category::Tools,
+                provider,
+                installed: t.version.clone(),
+                available: t.update.clone(),
+                aliases: t.aliases.clone(),
+                admin: false,
+                restart: Restart::App,
+                rollback: false,
+                needs_channel: false,
+                key: t.name.clone(),
+            });
+        }
     }
     if let Firmware::Devices { devices } = &s.firmware {
         for d in devices.iter().filter(|d| d.update.is_some()) {
@@ -443,7 +483,27 @@ pub fn how(t: &Target) -> &'static str {
         Provider::Profile => "your Nix profile",
         Provider::Flatpak => "a Flatpak",
         Provider::Firmware => "firmware",
+        Provider::Mise => "your mise tools",
+        Provider::UvTool => "your uv tools",
     }
+}
+
+/// Commands both NyxOS and the user's mise or uv install: whichever comes first on the
+/// PATH runs (mise's, in a shell where mise is active).
+pub fn doubles(targets: &[Target]) -> Vec<String> {
+    let nyxos: Vec<&Target> = targets.iter().filter(|t| t.provider == Provider::ToolPin).collect();
+    let mut out = Vec::new();
+    for t in targets.iter().filter(|t| matches!(t.provider, Provider::Mise | Provider::UvTool)) {
+        let names: Vec<&String> = std::iter::once(&t.id).chain(&t.aliases).collect();
+        if let Some(n) = nyxos.iter().find(|n| names.iter().any(|x| n.answers_to(x))) {
+            out.push(format!(
+                "{} is installed by both NyxOS and {}; each updates its own, and whichever is first on the PATH runs.",
+                n.name,
+                if t.provider == Provider::Mise { "mise" } else { "uv" }
+            ));
+        }
+    }
+    out
 }
 
 /// Installed names close to `name`.
@@ -492,6 +552,11 @@ pub enum Step {
     Flatpak { apps: Vec<String> },
     /// `fwupdmgr update`: these devices (ids). Never without asking.
     Firmware { devices: Vec<String> },
+    /// `mise upgrade`: these tools, or every one when empty (within what the user's mise
+    /// config asks for).
+    Mise { tools: Vec<String> },
+    /// `uv tool upgrade`: these tools, or every one when empty.
+    UvTools { tools: Vec<String> },
 }
 
 /// One line of a plan: what changes, from what to what.
@@ -540,6 +605,9 @@ pub fn plan(s: &Snapshot, targets: &[Target], picks: &[Pick], request: &str) -> 
     let mut flatpaks: Vec<String> = Vec::new();
     let mut flatpak_all = false;
     let mut firmware: Vec<String> = Vec::new();
+    // mise's and uv's: every one with news, or the ones named.
+    let mut mise = (false, Vec::<String>::new());
+    let mut uv = (false, Vec::<String>::new());
     let categories: Vec<Category> =
         picks.iter().filter_map(|pk| if let Pick::Category(c) = pk { Some(*c) } else { None }).collect();
     let everything = categories.len() == Category::ALL.len();
@@ -592,6 +660,10 @@ pub fn plan(s: &Snapshot, targets: &[Target], picks: &[Pick], request: &str) -> 
                 if !profile_all {
                     profile.extend(agents);
                 }
+                let news = |tools: &[UserTool]| tools.iter().any(|t| t.update.is_some()) || (!s.checked && !tools.is_empty());
+                mise.0 |= news(&s.mise);
+                uv.0 |= news(&s.uv_tools);
+                p.notes.extend(doubles(targets));
             }
             Category::Firmware => match &s.firmware {
                 Firmware::Devices { devices } => {
@@ -654,6 +726,14 @@ pub fn plan(s: &Snapshot, targets: &[Target], picks: &[Pick], request: &str) -> 
                 }
             }
             Provider::Firmware => firmware.push(t.key.clone()),
+            Provider::Mise | Provider::UvTool => {
+                let list = if t.provider == Provider::Mise { &mut mise.1 } else { &mut uv.1 };
+                if t.has_update() || !s.checked {
+                    list.push(t.key.clone());
+                } else {
+                    p.notes.push(format!("{} is up to date ({}).", t.name, t.installed.as_deref().unwrap_or("?")));
+                }
+            }
         }
     }
 
@@ -706,6 +786,19 @@ pub fn plan(s: &Snapshot, targets: &[Target], picks: &[Pick], request: &str) -> 
         }
         p.steps.push(Step::Flatpak { apps });
     }
+    for (provider, (all, mut names), tools) in [(Provider::Mise, mise, &s.mise), (Provider::UvTool, uv, &s.uv_tools)] {
+        if !all && names.is_empty() {
+            continue;
+        }
+        names.sort();
+        names.dedup();
+        let names = if all { Vec::new() } else { names };
+        let how = if provider == Provider::Mise { "your mise tools" } else { "your uv tools" };
+        for t in tools.iter().filter(|t| (names.is_empty() && (t.update.is_some() || !s.checked)) || names.contains(&t.name)) {
+            p.items.push(Item { name: t.name.clone(), from: t.version.clone(), to: t.update.clone(), how: how.into() });
+        }
+        p.steps.push(if provider == Provider::Mise { Step::Mise { tools: names } } else { Step::UvTools { tools: names } });
+    }
     if !firmware.is_empty() {
         firmware.sort();
         firmware.dedup();
@@ -747,6 +840,7 @@ pub fn status(s: &Snapshot, targets: &[Target]) -> Status {
     if let Firmware::Unavailable { reason } = &s.firmware {
         st.notes.push(format!("Firmware: {reason}"));
     }
+    st.notes.extend(doubles(targets));
     st
 }
 

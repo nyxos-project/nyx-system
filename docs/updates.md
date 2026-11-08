@@ -48,10 +48,30 @@ Every piece of software has one way it's updated. Nothing else may change it.
 | oh-my-pi and other flakes in a user's profile | the user's Nix profile | `nyx update omp` (`nix profile upgrade`) | none |
 | Packages a user installed with `nyx install` | the user's Nix profile | `nyx update NAME` | none |
 | Flatpaks | Flathub, per user | `nyx update apps` / `nyx update NAME` | none |
+| Languages and tools from mise (Node, Go, Zig, project CLIs) | the user's mise config, `~/.config/mise/config.toml` | `nyx update tools` / `nyx update NAME` (`mise upgrade`) | none (Nix's mise has none) |
+| Python tools from `uv tool install` | the user's uv tools, `~/.local/bin` | `nyx update tools` / `nyx update NAME` (`uv tool upgrade`) | none |
 | Firmware | fwupd and LVFS | `nyx update firmware`, always asked | n/a |
 
 Gemini CLI and Pi Forge aren't packaged: the catalog offers Antigravity CLI as Gemini
 CLI's successor. A tool joins this table by getting a pin.
+
+### mise and uv
+
+System tools come from NyxOS; project toolchains come from mise and uv. mise gives a
+project the Node, Python or Go version its `mise.toml` asks for, and new language
+releases the day they're out; uv installs Python tools and manages projects' Python.
+What they install is the user's: `nyx update tools` runs `mise upgrade` (within what the
+user's global mise config allows: `node = "22"` stays on 22) and `uv tool upgrade --all`
+as the user, in the home folder, so a project's own `mise.toml` is left to the project.
+Neither is in a NixOS generation, so a system rollback doesn't undo them.
+
+Their downloads are ordinary Linux programs, so NyxOS turns on `nix-ld`
+(`modules/nixos/toolchains.nix`) with the libraries Node's and Python's native modules
+use. zsh runs `mise activate` once mise is installed, and `~/.local/bin` is on the PATH.
+
+Don't install the coding agents NyxOS packages with mise as well: two copies update
+separately and whichever is first on the PATH runs. `nyx update status` says when it
+finds one, and `nyx update NAME` lists both rather than guess.
 
 ### Exceptions
 
@@ -103,7 +123,7 @@ cache only after review.
 nyx update                 everything (firmware is checked and asked about)
 nyx update system          the channel: NixOS, NyxOS, Nyx apps, nixpkgs apps
 nyx update apps            Flatpaks and your Nix-profile packages (and the channel, if Nyx apps changed)
-nyx update tools           every pinned tool, in one rebuild, and profile tools
+nyx update tools           every pinned tool, in one rebuild; profile tools; your mise and uv tools
 nyx update firmware        fwupd devices, always asked
 nyx update NAME…           what NAME is, wherever it comes from
 nyx update … --dry-run     the plan only
@@ -122,7 +142,7 @@ The engine is the `nyx-update` crate, shared by the command, Settings and the St
 System-level steps (the channel and tool pins) go to the System Manager's `Upgrade`
 method as one request, so one rebuild covers them; the manager reads the pins from the
 channel itself and never builds a URL a client sent. User steps (`nix profile`,
-`flatpak --user`) run as the user. Firmware goes through `fwupdmgr`, which asks polkit
+`flatpak --user`, `mise upgrade`, `uv tool upgrade`) run as the user. Firmware goes through `fwupdmgr`, which asks polkit
 itself.
 
 ## Safety

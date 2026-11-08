@@ -97,6 +97,8 @@ pub async fn execute(plan: &Plan, firmware: bool, line: &mut dyn FnMut(&str)) ->
             Step::System { channel, tools } => system(plan, *channel, tools, line).await,
             Step::Profile { names } => user_step(plan, step, profile(names, line)),
             Step::Flatpak { apps } => user_step(plan, step, flatpak(apps, line)),
+            Step::Mise { tools } => user_step(plan, step, mise(tools, line)),
+            Step::UvTools { tools } => user_step(plan, step, uv(tools, line)),
             Step::Firmware { devices } if firmware => user_step(plan, step, fwupd(devices, line)),
             Step::Firmware { .. } => Ok((String::from("Firmware wasn't updated: it's only updated when you agree to it."), None)),
         };
@@ -157,6 +159,9 @@ fn user_step(plan: &Plan, step: &Step, result: Result<String>) -> Result<(String
         Step::Flatpak { apps } if apps.is_empty() => (vec!["flatpak".to_string()], "user"),
         Step::Flatpak { apps } => (apps.clone(), "user"),
         Step::Firmware { devices } => (devices.clone(), "firmware"),
+        Step::Mise { tools } if tools.is_empty() => (vec!["mise".to_string()], "user"),
+        Step::UvTools { tools } if tools.is_empty() => (vec!["uv tools".to_string()], "user"),
+        Step::Mise { tools } | Step::UvTools { tools } => (tools.clone(), "user"),
         Step::System { .. } => (Vec::new(), "system"),
     };
     let entry = HistoryEntry {
@@ -176,8 +181,16 @@ fn user_step(plan: &Plan, step: &Step, result: Result<String>) -> Result<(String
 /// Run a command, sending each line it prints to `line`; the first `error:` line (or
 /// the last line) says why it failed.
 fn stream(program: &str, args: &[String], line: &mut dyn FnMut(&str)) -> Result<()> {
+    stream_in(program, args, None, line)
+}
+
+fn stream_in(program: &str, args: &[String], cwd: Option<&std::path::Path>, line: &mut dyn FnMut(&str)) -> Result<()> {
     line(&format!("$ {program} {}", args.join(" ")));
-    let mut child = Command::new(program)
+    let mut cmd = Command::new(program);
+    if let Some(dir) = cwd {
+        cmd.current_dir(dir);
+    }
+    let mut child = cmd
         .args(args)
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
@@ -230,6 +243,43 @@ fn flatpak(apps: &[String], line: &mut dyn FnMut(&str)) -> Result<String> {
     args.extend(apps.iter().cloned());
     stream("flatpak", &args, line)?;
     Ok(if apps.is_empty() { "Your Flatpaks are up to date".into() } else { format!("Updated {}", apps.join(", ")) })
+}
+
+/// A mise tool name (`node`, `github:charmbracelet/crush`) or a uv package.
+fn valid_tool_name(t: &str) -> bool {
+    (1..=200).contains(&t.len()) && !t.starts_with('-') && t.bytes().all(|b| b.is_ascii_alphanumeric() || b"@:/._+-".contains(&b))
+}
+
+/// Run in the home folder, so mise upgrades what the user's own config asks for.
+fn stream_at_home(program: &str, args: &[String], line: &mut dyn FnMut(&str)) -> Result<()> {
+    let home = std::env::var_os("HOME").context("HOME isn't set")?;
+    stream_in(program, args, Some(std::path::Path::new(&home)), line)
+}
+
+fn mise(tools: &[String], line: &mut dyn FnMut(&str)) -> Result<String> {
+    for t in tools {
+        anyhow::ensure!(valid_tool_name(t), "not a mise tool: {t}");
+    }
+    line("== Updating your mise tools");
+    let mut args = vec!["upgrade".to_string()];
+    args.extend(tools.iter().cloned());
+    stream_at_home("mise", &args, line)?;
+    Ok(if tools.is_empty() { "Your mise tools are up to date".into() } else { format!("Updated {}", tools.join(", ")) })
+}
+
+fn uv(tools: &[String], line: &mut dyn FnMut(&str)) -> Result<String> {
+    for t in tools {
+        anyhow::ensure!(valid_tool_name(t), "not a uv tool: {t}");
+    }
+    line("== Updating your uv tools");
+    let mut args = vec!["tool".to_string(), "upgrade".to_string()];
+    if tools.is_empty() {
+        args.push("--all".into());
+    } else {
+        args.extend(tools.iter().cloned());
+    }
+    stream_at_home("uv", &args, line)?;
+    Ok(if tools.is_empty() { "Your uv tools are up to date".into() } else { format!("Updated {}", tools.join(", ")) })
 }
 
 fn fwupd(devices: &[String], line: &mut dyn FnMut(&str)) -> Result<String> {

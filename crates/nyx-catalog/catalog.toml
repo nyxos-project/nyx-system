@@ -850,6 +850,7 @@ category = "cli-tools"
 tier = "welcome"
 packages = ["mise"]
 bin = "mise"
+note = "Its languages and tools are yours: nyx update tools updates them. Leave the coding agents to NyxOS."
 
 [[item]]
 id = "just"

@@ -71,6 +71,21 @@ fn machine() -> Snapshot {
                 needs_restart: true,
             }],
         },
+        mise: vec![
+            UserTool { name: "node".into(), version: Some("22.1.0".into()), update: Some("22.2.0".into()), aliases: vec![] },
+            UserTool {
+                name: "github:openai/codex".into(),
+                version: Some("0.167.0".into()),
+                update: None,
+                aliases: vec!["codex".into()],
+            },
+        ],
+        uv_tools: vec![UserTool {
+            name: "trafilatura".into(),
+            version: Some("2.3.0".into()),
+            update: Some("2.3.1".into()),
+            aliases: vec![],
+        }],
         checked: true,
     }
 }
@@ -100,7 +115,8 @@ fn a_tool_updates_alone() {
 
 #[test]
 fn a_tool_built_differently_needs_the_system_update() {
-    let p = plan_for(&machine(), &["codex"]).unwrap();
+    // "codex" alone also names mise's copy.
+    let p = plan_for(&machine(), &["Codex CLI"]).unwrap();
     assert!(p.steps.is_empty() && p.suggest_system);
     assert!(p.notes[0].contains("system update"), "{:?}", p.notes);
 }
@@ -112,9 +128,12 @@ fn categories_and_targets_resolve() {
         p.steps,
         vec![
             Step::System { channel: false, tools: vec!["claude-code".into()] },
-            Step::Profile { names: vec!["oh-my-pi".into()] }
+            Step::Profile { names: vec!["oh-my-pi".into()] },
+            Step::Mise { tools: vec![] },
+            Step::UvTools { tools: vec![] },
         ]
     );
+    assert!(p.items.iter().any(|i| i.name == "node" && i.to.as_deref() == Some("22.2.0")));
     assert!(p.notes.iter().any(|n| n.contains("Codex CLI")));
     let p = plan_for(&machine(), &["system"]).unwrap();
     assert_eq!(p.steps, vec![Step::System { channel: true, tools: vec![] }]);
@@ -170,6 +189,20 @@ fn unknown_names_suggest_close_ones() {
 }
 
 #[test]
+fn mise_and_uv_tools_are_the_users_to_update() {
+    let p = plan_for(&machine(), &["node", "trafilatura"]).unwrap();
+    assert_eq!(p.steps, vec![Step::Mise { tools: vec!["node".into()] }, Step::UvTools { tools: vec!["trafilatura".into()] }]);
+    assert!(!p.admin, "no password for the user's own tools");
+    // Codex from both NyxOS and mise: the name is listed, not guessed, and the double said.
+    let e = plan_for(&machine(), &["codex"]).unwrap_err().to_string();
+    assert!(e.contains("could be any of these") && e.contains("your mise tools"), "{e}");
+    let s = machine();
+    assert!(status(&s, &targets(&s)).notes.iter().any(|n| n.contains("Codex CLI is installed by both NyxOS and mise")));
+    let p = plan_for(&machine(), &["github:openai/codex"]).unwrap();
+    assert!(p.steps.is_empty() && p.notes[0].contains("up to date"));
+}
+
+#[test]
 fn a_tool_that_isnt_installed_says_so() {
     let s = machine();
     let t = targets(&s);
@@ -188,6 +221,9 @@ fn nothing_new_is_an_empty_plan() {
     s.flatpaks[0].update = None;
     s.profile.clear();
     s.firmware = Firmware::Devices { devices: vec![] };
+    for t in s.mise.iter_mut().chain(&mut s.uv_tools) {
+        t.update = None;
+    }
     let p = plan_for(&s, &[]).unwrap();
     assert!(p.is_empty(), "{:?}", p.steps);
     let p = plan_for(&s, &["claude"]).unwrap();
