@@ -1,8 +1,9 @@
 //! nyx-themed: the theme service. It owns `io.github.design_nexus.nyx.Theme1` on the
 //! session bus and keeps every running client on the same theme:
 //!
-//! - it watches the theme choices (`~/.config/nyx/theme.toml`), theme files,
-//!   installed themes and, on Omarchy, the active Omarchy theme;
+//! - it watches the theme choices (`~/.config/nyx/theme.toml`), the system's default
+//!   theme (NyxOS's `appearance` defaults and overrides), theme files, installed themes
+//!   and, on Omarchy, the active Omarchy theme;
 //! - on a change it resolves the system theme once, writes the immutable snapshot
 //!   (`$XDG_RUNTIME_DIR/nyx/theme/system.json`) as the next generation and emits
 //!   `ThemeChanged`; clients fetch or resolve the new theme themselves;
@@ -50,7 +51,13 @@ async fn main() -> Result<()> {
             && !matches!(e.kind, notify::EventKind::Access(_))
             && e.paths.iter().any(|p| {
                 let s = p.to_string_lossy();
-                !s.contains("/.staging") && !s.contains("/.previous") && !s.ends_with(".lock") && !s.contains(".tmp-")
+                // In /etc itself only a NixOS switch replacing /etc/static counts.
+                let etc = p.parent() == Some(std::path::Path::new("/etc"));
+                (!etc || p.file_name().is_some_and(|n| n == "static"))
+                    && !s.contains("/.staging")
+                    && !s.contains("/.previous")
+                    && !s.ends_with(".lock")
+                    && !s.contains(".tmp-")
             })
         {
             let _ = tx.send(());
@@ -67,6 +74,11 @@ async fn main() -> Result<()> {
         {
             eprintln!("nyx-themed: can't watch {}: {e}", dir.display());
         }
+    }
+    // The system's default theme (/etc/nyxos/defaults/appearance.toml) points through
+    // /etc/static, which a NixOS switch replaces without touching the file's own link.
+    if std::path::Path::new("/etc/static").exists() {
+        let _ = watcher.watch(std::path::Path::new("/etc"), RecursiveMode::NonRecursive);
     }
     while rx.recv().await.is_some() {
         // A change arrives in steps (write, rename); take the last of a burst.

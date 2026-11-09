@@ -21,3 +21,8 @@ tempfile = "3"
 [profile.release]
 lto = "thin"
 strip = true
+
+# The theme engine (nyx-design) takes nyx-config from this repository by git; here it's
+# this checkout's, so the programs carry one copy.
+[patch."https://github.com/nyxos-project/nyx-system.git"]
+nyx-config = { path = "crates/nyx-config" }
