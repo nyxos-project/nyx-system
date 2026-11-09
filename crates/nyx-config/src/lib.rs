@@ -14,6 +14,12 @@ use anyhow::{Context, Result, bail, ensure};
 use std::path::{Path, PathBuf};
 use toml::{Table, Value};
 
+pub mod store;
+#[cfg(feature = "watch")]
+pub mod watch;
+
+pub use store::{Domain, Explained, Loaded, Migration, Problem, SCHEMA_KEY, Store, drop_defaults, parse, sparsify, table_of};
+
 /// Which layer a value comes from.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub enum Layer {
