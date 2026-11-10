@@ -53,10 +53,28 @@ pub fn probe(opts: Options) -> Snapshot {
     let mut apps = Vec::new();
     let mut flatpak_aliases: BTreeMap<String, Vec<String>> = BTreeMap::new();
     let mut profile_items: BTreeMap<String, (bool, Vec<String>)> = BTreeMap::new();
+    // Catalog items by the package a profile installs them as: whether it's a tool, and
+    // the names it answers to.
+    let mut by_attr: BTreeMap<String, (bool, Vec<String>, String)> = BTreeMap::new();
     if let Some(c) = &catalog {
+        for item in &c.items {
+            let tool = TOOL_CATEGORIES.contains(&item.category.as_str());
+            for attr in item.profile_attrs() {
+                by_attr.insert(attr, (tool, item.names(), item.name.clone()));
+            }
+        }
         for item in c.items.iter().filter(|i| installed.has(i)) {
             let mut names = vec![item.id.clone()];
             names.extend(item.bin.clone());
+            let attrs = item.profile_attrs();
+            // Only in the person's profile: its profile element is what updates.
+            let only_in_profile = !attrs.is_empty()
+                && attrs.iter().all(|a| installed.profile_attrs.contains(a))
+                && !installed.system_wide(item)
+                && !item.packages.iter().any(|p| tools.get(p).is_some_and(|t| t.installed));
+            if only_in_profile {
+                continue;
+            }
             if let Some(f) = &item.flatpak {
                 flatpak_aliases.entry(f.clone()).or_default().extend(names);
             } else if let Some(url) = &item.profile {
@@ -85,13 +103,33 @@ pub fn probe(opts: Options) -> Snapshot {
         }
     }
 
-    let profile = nyx_catalog::profile_elements()
-        .into_iter()
-        .map(|(name, url)| {
-            let (tool, aliases) = profile_items.get(&url).cloned().unwrap_or_default();
-            ProfileElement { name, url, tool, aliases }
+    let elements = installed.profile.clone();
+    let mut profile: Vec<ProfileElement> = elements
+        .iter()
+        .map(|e| {
+            let (tool, aliases, title) = match e.package().and_then(|a| by_attr.get(a)) {
+                Some((tool, names, title)) => (*tool, names.clone(), Some(title.clone())),
+                None => {
+                    let (tool, names) = profile_items.get(&e.reference()).cloned().unwrap_or_default();
+                    (tool, names, None)
+                }
+            };
+            ProfileElement {
+                name: e.name.clone(),
+                url: e.reference(),
+                tool,
+                aliases,
+                version: e.version(),
+                title,
+                ..ProfileElement::default()
+            }
         })
         .collect();
+    if opts.check
+        && let (Some(url), Some(head)) = (&channel.url, &channel.head)
+    {
+        channel_versions(url, head, &elements, head_tools.as_ref(), &mut profile);
+    }
 
     let mut flatpaks = user_flatpaks();
     if opts.check && !flatpaks.is_empty() {
@@ -108,6 +146,66 @@ pub fn probe(opts: Options) -> Snapshot {
     let (mise, uv_tools) = (mise_tools(opts.check), uv_tools(opts.check));
 
     Snapshot { channel, tools, head_tools, tool_aliases, apps, profile, flatpaks, firmware, mise, uv_tools, checked: opts.check }
+}
+
+/// What the head of the channel has for the profile's packages that come from the
+/// channel (`url`): a tool's pin, or the package's version in the channel's packages
+/// (one evaluation at the head's revision, so it's what `nix profile upgrade` gets).
+fn channel_versions(
+    url: &str,
+    head: &Rev,
+    elements: &[nyx_catalog::ProfileElement],
+    pins: Option<&BTreeMap<String, ToolPin>>,
+    profile: &mut [ProfileElement],
+) {
+    let from_channel: Vec<(usize, String)> = elements
+        .iter()
+        .enumerate()
+        .filter(|(_, e)| e.url == url)
+        .filter_map(|(i, e)| e.package().filter(|a| nyx_system_proto::valid_package(a)).map(|a| (i, a.to_string())))
+        .collect();
+    let mut newest: BTreeMap<usize, String> = BTreeMap::new();
+    let mut ask = Vec::new();
+    for (i, attr) in &from_channel {
+        match pins.and_then(|p| p.get(attr)) {
+            Some(pin) => {
+                newest.insert(*i, pin.version.clone());
+            }
+            None => ask.push((*i, attr.clone())),
+        }
+    }
+    if !ask.is_empty()
+        && let Some((base, _)) = url.rsplit_once('/')
+    {
+        let list: Vec<String> = ask.iter().map(|(_, a)| format!("\"{a}\"")).collect();
+        let apply =
+            format!("p: map (a: (p.lib.attrByPath (p.lib.splitString \".\" a) {{ }} p).version or null) [ {} ]", list.join(" "));
+        let flake = format!("{base}/{}#legacyPackages.{}-linux", head.rev, std::env::consts::ARCH);
+        let versions: Vec<Option<String>> = Command::new("nix")
+            .args(["eval", "--json", &flake, "--apply", &apply])
+            .stdin(std::process::Stdio::null())
+            .output()
+            .ok()
+            .filter(|o| o.status.success())
+            .and_then(|o| serde_json::from_slice(&o.stdout).ok())
+            .unwrap_or_default();
+        for ((i, _), v) in ask.iter().zip(versions) {
+            if let Some(v) = v {
+                newest.insert(*i, v);
+            }
+        }
+    }
+    for (i, version) in newest {
+        let p = &mut profile[i];
+        p.known = true;
+        let older = p
+            .version
+            .as_deref()
+            .is_none_or(|have| nyx_system_proto::compare_versions(have, &version) == std::cmp::Ordering::Less);
+        if older {
+            p.update = Some(version);
+        }
+    }
 }
 
 /// A command's output, run in the home folder (so mise reads the user's own config, not

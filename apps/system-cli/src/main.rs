@@ -1,12 +1,14 @@
 //! nyx-system: the System Manager and the configuration layers from a terminal.
 
+mod exit;
 mod update;
 
 use anyhow::{Context, Result, bail};
 use futures_util::StreamExt;
-use nyx_catalog::{Catalog, Installed, Tier};
+use nyx_catalog::{Catalog, Found, Installed, Scope, Tier};
 use nyx_config::{Layer, Layers};
 use nyx_system_proto::{Change, GROUPS, Generation, SERVICES, SystemProxy, SystemSettings};
+use std::collections::BTreeSet;
 
 const USAGE: &str = "\
 nyx-system: NyxOS's system settings, packages, services and generations
@@ -51,8 +53,22 @@ nyx-system: NyxOS's system settings, packages, services and generations
 
   nyx-system catalog [SECTION]            The software catalog (* installed)
   nyx-system catalog presets
-  nyx-system catalog install [--preset P]... [ID]... [--yes]
-  nyx-system catalog remove ID...
+  nyx-system catalog search TERM...       Items by name, alias or summary
+  nyx-system catalog installed --json     Yours (your profile), and what's installed
+                                          for everyone that could be yours
+  nyx-system catalog install [--preset P]... [NAME]... [--yes] [--or-profile]
+                                          By id, name or alias: per-user items into
+                                          your Nix profile, system ones for everyone;
+                                          --or-profile: other names are packages from
+                                          the channel, for you
+  nyx-system catalog remove NAME... [--yes] [--or-profile]
+                                          Wherever it's installed (--or-profile: or a
+                                          package in your profile)
+  nyx-system catalog move NAME...|--all [--yes]
+                                          Per-user software installed for everyone,
+                                          into your own profile
+  nyx-system trust-apps                   Trust the Nyx apps in your profile (done
+                                          after each change and at sign-in)
 
   nyx-system default set DOMAIN KEY VALUE Every user's default (VALUE is TOML)
   nyx-system default reset DOMAIN KEY
@@ -95,18 +111,49 @@ async fn installed(p: &SystemProxy<'static>) -> Result<Installed> {
     Ok(Installed::probe(s))
 }
 
-fn confirm(question: &str) -> Result<bool> {
-    use std::io::Write;
-    print!("{question} [y/N] ");
-    std::io::stdout().flush()?;
-    let mut answer = String::new();
-    std::io::stdin().read_line(&mut answer)?;
-    Ok(matches!(answer.trim(), "y" | "Y" | "yes"))
+/// Catalog ids for `names` (ids, names, aliases, commands, packages), asking which one a
+/// name means when it fits several. With `others`, names the catalog doesn't have go
+/// there instead of failing.
+fn resolve_names(c: &Catalog, names: &[&str], ask: bool, mut others: Option<&mut Vec<String>>) -> Result<BTreeSet<String>> {
+    let mut ids = BTreeSet::new();
+    for name in names {
+        match c.resolve(name) {
+            Found::One(i) => {
+                ids.insert(i.id.clone());
+            }
+            Found::Many(items) => {
+                let options: Vec<(String, String)> =
+                    items.iter().map(|i| (i.id.clone(), format!("{}: {}", i.name, i.summary))).collect();
+                ids.insert(items[exit::choose(name, &options, ask)?].id.clone());
+            }
+            Found::None => match others.as_deref_mut() {
+                Some(o) => o.push(name.to_string()),
+                None => {
+                    return Err(exit::fail(
+                        exit::NAME,
+                        format!("nothing in the catalog is called {name} (nyx-system catalog search {name})"),
+                    ));
+                }
+            },
+        }
+    }
+    Ok(ids)
+}
+
+fn scope_label(i: &nyx_catalog::Item) -> &'static str {
+    match i.scope() {
+        Scope::User => "for you",
+        Scope::System => "for everyone",
+    }
 }
 
 async fn catalog(args: &[&str]) -> Result<()> {
     let c = Catalog::load()?;
-    match args {
+    let yes = args.contains(&"--yes");
+    let or_profile = args.contains(&"--or-profile");
+    let all = args.contains(&"--all");
+    let args: Vec<&str> = args.iter().copied().filter(|a| !matches!(*a, "--yes" | "--or-profile" | "--all")).collect();
+    match args.as_slice() {
         [] | [_] if args.first().is_none_or(|s| c.section(s).is_some()) => {
             let have = installed(&proxy().await?).await?;
             for s in c.sections.iter().filter(|s| args.is_empty() || args[0] == s.id) {
@@ -118,7 +165,7 @@ async fn catalog(args: &[&str]) -> Result<()> {
                         Tier::Welcome => "",
                         Tier::Store => "store",
                     };
-                    println!("  {mark} {:<16} {:<5} {}: {}", i.id, tier, i.name, i.summary);
+                    println!("  {mark} {:<16} {:<5} {}: {} ({})", i.id, tier, i.name, i.summary, scope_label(i));
                 }
             }
         }
@@ -127,29 +174,103 @@ async fn catalog(args: &[&str]) -> Result<()> {
                 println!("{:<14} {}: {}\n               {}", p.id, p.name, p.summary, p.items.join(", "));
             }
         }
+        // What's yours (your profile) and what's installed for everyone that could be,
+        // as JSON for Settings.
+        ["installed", "--json"] => {
+            let have = installed(&proxy().await?).await?;
+            #[derive(serde::Serialize)]
+            struct Mine {
+                /// What `catalog remove --or-profile` takes: the item's id, or the element.
+                id: String,
+                name: String,
+                version: Option<String>,
+                from: String,
+            }
+            /// A per-user item installed for everyone: `catalog move` takes its id.
+            #[derive(serde::Serialize)]
+            struct Movable {
+                id: String,
+                name: String,
+                packages: Vec<String>,
+                nyx: Vec<String>,
+            }
+            #[derive(serde::Serialize)]
+            #[serde(rename_all = "camelCase")]
+            struct Out {
+                for_you: Vec<Mine>,
+                movable: Vec<Movable>,
+            }
+            let for_you = have
+                .profile
+                .iter()
+                .map(|e| {
+                    let item = e.package().and_then(|a| c.items.iter().find(|i| i.profile_attrs().iter().any(|x| x == a)));
+                    let item = item.or_else(|| c.items.iter().find(|i| i.profile.as_deref() == Some(e.reference().as_str())));
+                    Mine {
+                        id: item.map(|i| i.id.clone()).unwrap_or_else(|| e.name.clone()),
+                        name: item.map(|i| i.name.clone()).unwrap_or_else(|| e.name.clone()),
+                        version: e.version(),
+                        from: e.reference(),
+                    }
+                })
+                .collect();
+            let movable = c
+                .system_wide(&have)
+                .map(|i| Movable { id: i.id.clone(), name: i.name.clone(), packages: i.packages.clone(), nyx: i.nyx.clone() })
+                .collect();
+            println!("{}", serde_json::to_string_pretty(&Out { for_you, movable })?);
+        }
+        ["search", terms @ ..] if !terms.is_empty() => {
+            let hits = c.search(&terms.join(" "));
+            if hits.is_empty() {
+                return Err(exit::fail(exit::NAME, "nothing in the catalog matches"));
+            }
+            let have = Installed::probe(SystemSettings::default());
+            let settings = match proxy().await {
+                Ok(p) => p.settings().await.ok().and_then(|s| serde_json::from_str(&s).ok()).unwrap_or_default(),
+                Err(_) => SystemSettings::default(),
+            };
+            let have = Installed { settings, ..have };
+            for i in hits {
+                let mark = if have.has(i) { "*" } else { " " };
+                println!("{mark} {:<18} {}: {} ({})", i.id, i.name, i.summary, scope_label(i));
+            }
+        }
         ["install", rest @ ..] => {
-            let yes = rest.contains(&"--yes");
-            let mut ids = std::collections::BTreeSet::new();
-            let mut it = rest.iter().filter(|a| **a != "--yes");
+            let mut ids = BTreeSet::new();
+            let mut names = Vec::new();
+            let mut it = rest.iter();
             while let Some(a) = it.next() {
                 if *a == "--preset" {
                     ids.extend(c.presets(&[it.next().context("--preset needs a name")?])?);
                 } else {
-                    ids.insert(a.to_string());
+                    names.push(*a);
                 }
             }
-            if ids.is_empty() {
-                bail!("name items or presets to install");
+            let mut others = Vec::new();
+            ids.extend(resolve_names(&c, &names, !yes, or_profile.then_some(&mut others))?);
+            if ids.is_empty() && others.is_empty() {
+                return Err(exit::fail(exit::USAGE, "name items or presets to install"));
             }
             let p = proxy().await?;
             let user = std::env::var("USER").context("USER isn't set")?;
-            let plan = c.plan(&ids, &user, &installed(&p).await?)?;
+            let have = installed(&p).await?;
+            let mut plan = c.plan(&ids, &user, &have)?;
+            // Not in the catalog: a package from the channel, for the user.
+            for name in &others {
+                if !nyx_system_proto::valid_package(name) {
+                    return Err(exit::fail(exit::NAME, format!("{name} isn't a package name")));
+                }
+                if !have.profile_attrs.contains(name.as_str()) {
+                    plan.profiles.push(have.reference(name));
+                }
+            }
             if plan.is_empty() {
                 println!("Everything's already installed.");
                 return Ok(());
             }
             for ch in &plan.changes {
-                println!("  {}", serde_json::to_string(ch)?);
+                println!("  {} (for everyone)", serde_json::to_string(ch)?);
             }
             for f in &plan.flatpaks {
                 println!("  flathub {f} (for you)");
@@ -160,8 +281,13 @@ async fn catalog(args: &[&str]) -> Result<()> {
             for consent in &plan.consent {
                 println!("! {}", consent.describe());
             }
-            if !yes && !confirm(if plan.rebuilds() { "Install? The system is rebuilt once." } else { "Install?" })? {
-                bail!("nothing was changed");
+            let question = if plan.rebuilds() {
+                "Install? The system is rebuilt once, which asks for the administrator's password."
+            } else {
+                "Install?"
+            };
+            if !yes && !exit::confirm(question)? {
+                return Err(exit::fail(exit::DECLINED, "nothing was changed"));
             }
             if plan.rebuilds() {
                 let json = serde_json::to_string(&plan.changes)?;
@@ -170,12 +296,26 @@ async fn catalog(args: &[&str]) -> Result<()> {
             nyx_catalog::flatpak(&plan.flatpaks, true, |l| eprintln!("{l}"))?;
             nyx_catalog::nix_profile(&plan.profiles, true, |l| eprintln!("{l}"))?;
         }
-        ["remove", ids @ ..] if !ids.is_empty() => {
+        ["remove", names @ ..] if !names.is_empty() => {
             let p = proxy().await?;
-            let ids = ids.iter().map(|s| s.to_string()).collect();
-            let plan = c.removal(&ids, &installed(&p).await?)?;
+            let have = installed(&p).await?;
+            let mut others = Vec::new();
+            let ids = resolve_names(&c, names, !yes, or_profile.then_some(&mut others))?;
+            let mut plan = c.removal(&ids, &have)?;
+            for name in &others {
+                let found: Vec<String> = have
+                    .profile
+                    .iter()
+                    .filter(|e| e.name == *name || e.package() == Some(name.as_str()))
+                    .map(|e| e.reference())
+                    .collect();
+                if found.is_empty() {
+                    return Err(exit::fail(exit::NAME, format!("nothing installed is called {name} (nyx list)")));
+                }
+                plan.profiles.extend(found);
+            }
             if plan.is_empty() {
-                println!("None of those are installed through NyxOS.");
+                println!("None of those are installed.");
                 return Ok(());
             }
             if plan.rebuilds() {
@@ -185,7 +325,34 @@ async fn catalog(args: &[&str]) -> Result<()> {
             nyx_catalog::flatpak(&plan.flatpaks, false, |l| eprintln!("{l}"))?;
             nyx_catalog::nix_profile(&plan.profiles, false, |l| eprintln!("{l}"))?;
         }
-        _ => bail!("see nyx-system --help"),
+        // Per-user software NyxOS installed for everyone, into this person's profile.
+        ["move", names @ ..] if all || !names.is_empty() => {
+            let p = proxy().await?;
+            let have = installed(&p).await?;
+            let ids: BTreeSet<String> =
+                if all { c.system_wide(&have).map(|i| i.id.clone()).collect() } else { resolve_names(&c, names, !yes, None)? };
+            if ids.is_empty() {
+                println!("Nothing per-user is installed for everyone.");
+                return Ok(());
+            }
+            let plan = c.moving(&ids, &have)?;
+            for f in &plan.profiles {
+                println!("  nix profile {f} (for you)");
+            }
+            println!("  then removed from everyone's packages (one rebuild); other accounts install their own");
+            for consent in &plan.consent {
+                println!("! {}", consent.describe());
+            }
+            if !yes && !exit::confirm("Move?")? {
+                return Err(exit::fail(exit::DECLINED, "nothing was changed"));
+            }
+            nyx_catalog::nix_profile(&plan.profiles, true, |l| eprintln!("{l}"))?;
+            if plan.rebuilds() {
+                let json = serde_json::to_string(&plan.changes)?;
+                println!("{}", with_progress(&p, p.apply(&json)).await?);
+            }
+        }
+        _ => return Err(exit::fail(exit::USAGE, "see nyx-system --help")),
     }
     Ok(())
 }
@@ -387,6 +554,7 @@ async fn run(args: &[&str]) -> Result<()> {
             }
         }
         ["catalog", rest @ ..] => catalog(rest).await?,
+        ["trust-apps"] => println!("{} Nyx apps in your profile are trusted", proxy().await?.trust_apps().await?),
         ["default", "set", domain, key, v] => {
             proxy().await?.set_default(domain, key, &serde_json::to_string(&value(v))?).await?;
         }
@@ -409,7 +577,7 @@ async fn run(args: &[&str]) -> Result<()> {
         ["config", "reset", domain, key] => layers.reset(Layer::User, domain, key)?,
         _ => {
             eprint!("{}", usage());
-            std::process::exit(2);
+            std::process::exit(exit::USAGE);
         }
     }
     Ok(())
@@ -421,7 +589,7 @@ async fn main() {
     let args: Vec<&str> = args.iter().map(String::as_str).collect();
     if let Err(e) = run(&args).await {
         eprintln!("nyx-system: {e:#}");
-        std::process::exit(1);
+        std::process::exit(exit::code(&e));
     }
 }
 

@@ -51,8 +51,29 @@ fn machine() -> Snapshot {
                 url: "github:can1357/oh-my-pi".into(),
                 tool: true,
                 aliases: vec!["omp".into()],
+                ..ProfileElement::default()
             },
-            ProfileElement { name: "firefox".into(), url: "nixpkgs#firefox".into(), tool: false, aliases: vec![] },
+            ProfileElement { name: "firefox".into(), url: "nixpkgs#firefox".into(), ..ProfileElement::default() },
+            // Notepad from the channel, per user, with news at its head.
+            ProfileElement {
+                name: "nyx-notepad".into(),
+                url: "github:nyxos-project/nyxos/stable#nyx-notepad".into(),
+                aliases: vec!["notepad".into()],
+                version: Some("0.1.0-unstable-2026-11-01".into()),
+                update: Some("0.1.0-unstable-2026-11-08".into()),
+                known: true,
+                ..ProfileElement::default()
+            },
+            // Codex in the profile from the channel, already the head's.
+            ProfileElement {
+                name: "codex-1".into(),
+                url: "github:nyxos-project/nyxos/stable#codex".into(),
+                tool: true,
+                aliases: vec!["openai-codex".into()],
+                version: Some("0.167.0".into()),
+                known: true,
+                ..ProfileElement::default()
+            },
         ],
         flatpaks: vec![Flatpak {
             id: "org.gimp.GIMP".into(),
@@ -152,7 +173,11 @@ fn everything_is_one_rebuild_and_asks_before_firmware() {
     let systems = p.steps.iter().filter(|s| matches!(s, Step::System { .. })).count();
     assert_eq!(systems, 1, "{:?}", p.steps);
     assert_eq!(p.steps[0], Step::System { channel: true, tools: vec![] });
-    assert!(p.steps.contains(&Step::Profile { names: vec![] }));
+    assert!(
+        p.steps.contains(&Step::Profile { names: vec!["firefox".into(), "nyx-notepad".into(), "oh-my-pi".into()] }),
+        "only what may have news: {:?}",
+        p.steps
+    );
     assert!(p.steps.contains(&Step::Flatpak { apps: vec![] }));
     assert!(p.steps.contains(&Step::Firmware { devices: vec!["abc123".into()] }));
     assert!(p.firmware_implied && p.may_restart);
@@ -163,7 +188,8 @@ fn everything_is_one_rebuild_and_asks_before_firmware() {
 fn apps_bring_the_channel_when_it_has_news() {
     let p = plan_for(&machine(), &["apps"]).unwrap();
     assert!(p.steps.contains(&Step::System { channel: true, tools: vec![] }));
-    assert!(p.steps.contains(&Step::Profile { names: vec!["firefox".into()] }));
+    assert!(p.steps.contains(&Step::Profile { names: vec!["firefox".into(), "nyx-notepad".into()] }));
+    assert!(p.items.iter().any(|i| i.name == "nyx-notepad" && i.to.as_deref() == Some("0.1.0-unstable-2026-11-08")));
     assert!(p.notes.iter().any(|n| n.contains("come with the system channel")));
     let mut s = machine();
     s.channel.head = s.channel.installed.clone();
@@ -281,4 +307,42 @@ fn dates_are_civil() {
     assert_eq!(date(1_794_009_600), "2026-11-07");
     assert_eq!(date(951_782_400), "2000-02-29");
     assert_eq!(rev("434e34eaaaaa", 1_793_836_800).describe(), "434e34e (2026-11-05)");
+}
+
+#[test]
+fn profile_packages_have_versions_and_skip_what_is_current() {
+    let s = machine();
+    let t = targets(&s);
+    let notepad = t.iter().find(|t| t.id == "nyx-notepad").unwrap();
+    assert_eq!(notepad.installed.as_deref(), Some("0.1.0-unstable-2026-11-01"));
+    assert!(notepad.has_update() && !notepad.admin, "a per-user app updates without the password");
+    let p = plan_for(&s, &["openai-codex"]).unwrap();
+    assert!(p.steps.is_empty() && p.notes[0].contains("up to date"), "{:?}", p);
+    let p = plan_for(&s, &["notepad"]).unwrap();
+    assert_eq!(p.steps, vec![Step::Profile { names: vec!["nyx-notepad".into()] }]);
+}
+
+#[test]
+fn unattended_runs_update_only_the_persons_own_software() {
+    let s = machine();
+    let t = targets(&s);
+    let picks = unattended(&s, &t, &[Category::Apps, Category::Tools]);
+    let p = plan(&s, &t, &picks, "nyx update auto");
+    assert!(!p.admin && !p.steps.iter().any(|s| matches!(s, Step::System { .. } | Step::Firmware { .. })), "{:?}", p.steps);
+    assert!(p.steps.contains(&Step::Flatpak { apps: vec!["org.gimp.GIMP".into()] }));
+    assert!(p.steps.iter().any(|s| matches!(s, Step::Profile { names } if names.contains(&"nyx-notepad".to_string()))));
+    assert!(p.steps.contains(&Step::Mise { tools: vec!["node".into()] }));
+    assert!(unattended(&s, &t, &[Category::System, Category::Firmware]).is_empty());
+}
+
+#[test]
+fn unknown_and_ambiguous_names_are_typed() {
+    let t = targets(&machine());
+    let e = resolve(&t, &["cursor"]).unwrap_err();
+    let a = e.downcast_ref::<Ambiguous>().expect("ambiguous");
+    assert_eq!(a.options.len(), 2);
+    assert!(resolve(&t, &["zzzzzz"]).unwrap_err().downcast_ref::<Unknown>().is_some());
+    for word in ["system", "apps", "tools", "firmware"] {
+        assert!(RESERVED.contains(&word) && matches!(resolve(&t, &[word]).unwrap()[0], Pick::Category(_)));
+    }
 }

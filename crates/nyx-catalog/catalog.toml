@@ -1,12 +1,18 @@
 # The NyxOS software catalog, shared by Nyx Welcome, Nyx Store and `nyx-system catalog`.
 #
 # tier: "base" is preinstalled, "welcome" is offered in Welcome (and the Store), "store"
-# only in the Store. An item installs any of: nixpkgs `packages` (for everyone, through
-# the System Manager), `nyx` apps (nyx.<name>.enable), a Flathub `flatpak` (for the
-# user), a flake for the user's Nix `profile` (`nix profile add`, for tools nixpkgs
-# doesn't have; it needs a `bin`), and turns on `services`. `groups` are joined by the user who asks, only after
-# they agree; `unfree` items need their license accepted. `bin` is a command that shows
-# the item is already installed, however it got there.
+# only in the Store. An item installs any of: nixpkgs `packages`, `nyx` apps, a Flathub
+# `flatpak` (for the user), a flake for the user's Nix `profile` (`nix profile add`, for
+# tools nixpkgs doesn't have; it needs a `bin`), and turns on `services`. `groups` are
+# joined by the user who asks, only after they agree; `unfree` items need their license
+# accepted. `bin` is a command that shows the item is already installed, however it got
+# there; `aliases` are more names it answers to.
+#
+# scope: who it's installed for. Per user (the default) puts `packages` and `nyx` apps
+# (as nyx-<name>) in the person's Nix profile, from the system's channel: no password,
+# no rebuild. "system" installs them for everyone through the System Manager (packages
+# and nyx.<name>.enable, one rebuild). Base items and anything with `services` or
+# `groups` are "system" by themselves; set it for Nyx apps built into the desktop.
 
 [[section]]
 id = "nyx-apps"
@@ -217,7 +223,7 @@ id = "nyx-notepad"
 name = "Nyx Notepad"
 summary = "A plain text editor."
 category = "nyx-essentials"
-tier = "base"
+tier = "welcome"
 nyx = ["notepad"]
 
 [[item]]
@@ -225,7 +231,7 @@ id = "nyx-calculator"
 name = "Nyx Calculator"
 summary = "A calculator."
 category = "nyx-essentials"
-tier = "base"
+tier = "welcome"
 nyx = ["calculator"]
 
 [[item]]
@@ -233,7 +239,7 @@ id = "nyx-archive"
 name = "Nyx Archive"
 summary = "Open and make zip, tar and 7z archives."
 category = "nyx-essentials"
-tier = "base"
+tier = "welcome"
 nyx = ["archive"]
 
 [[item]]
@@ -241,7 +247,7 @@ id = "nyx-photos"
 name = "Nyx Photos"
 summary = "Your photo library and the image viewer."
 category = "nyx-essentials"
-tier = "base"
+tier = "welcome"
 nyx = ["photos"]
 
 [[item]]
@@ -403,6 +409,8 @@ name = "Nyx Assistant"
 summary = "A local assistant you can talk to, with its HUD and Canvas."
 category = "nyx-tools"
 tier = "welcome"
+# Part of the desktop: its HUD, Canvas and speech services run with the session.
+scope = "system"
 nyx = ["assistant"]
 note = "Downloads its speech and language models the first time you set it up."
 
@@ -444,6 +452,8 @@ name = "Nyx Clipboard"
 summary = "Clipboard history."
 category = "nyx-tools"
 tier = "store"
+# Part of the desktop: the shell's clipboard history.
+scope = "system"
 nyx = ["clipboard"]
 
 [[item]]
@@ -528,6 +538,7 @@ tier = "welcome"
 packages = ["vscode"]
 unfree = true
 bin = "code"
+aliases = ["visual-studio-code"]
 
 [[item]]
 id = "vscodium"
@@ -1023,6 +1034,8 @@ name = "WireGuard tools"
 summary = "Set up WireGuard tunnels."
 category = "network"
 tier = "welcome"
+# wg-quick runs as root, which doesn't see a person's own packages.
+scope = "system"
 packages = ["wireguard-tools"]
 bin = "wg"
 
@@ -1079,6 +1092,7 @@ category = "cloud"
 tier = "welcome"
 packages = ["kubectl", "kubernetes-helm", "k9s"]
 bin = "kubectl"
+aliases = ["helm", "k8s"]
 
 # ----- AI agents -----
 

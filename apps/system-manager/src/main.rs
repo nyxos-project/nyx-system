@@ -11,6 +11,7 @@
 mod generations;
 mod rebuild;
 mod snapshots;
+mod trust;
 mod upgrade;
 
 use anyhow::{Context, Result};
@@ -82,6 +83,8 @@ struct Manager {
     config: Config,
     /// One change at a time.
     busy: Mutex<()>,
+    /// One write of the trusted programs' list at a time.
+    trust: Mutex<()>,
     last_use: Arc<std::sync::Mutex<Instant>>,
 }
 
@@ -567,6 +570,24 @@ impl Manager {
         result.map_err(failed)
     }
 
+    /// Trust the Nyx apps in the caller's own Nix profile that NyxOS's cache built, like
+    /// the system's (`/etc/nyx/trusted-bin`). Anyone may ask, for their own profile only;
+    /// returns how many apps that is.
+    async fn trust_apps(&self, #[zbus(header)] header: Header<'_>, #[zbus(connection)] conn: &Connection) -> fdo::Result<u32> {
+        self.touch();
+        let sender = header.sender().ok_or_else(|| fdo::Error::AccessDenied("no sender".into()))?.to_string();
+        let uid = fdo::DBusProxy::new(conn)
+            .await?
+            .get_connection_unix_user(zbus::names::BusName::try_from(sender.as_str()).map_err(failed)?)
+            .await?;
+        let home = trust::home(uid).ok_or_else(|| failed(format!("uid {uid} has no home folder")))?;
+        let _guard = self.trust.lock().await;
+        let state = self.config.state.clone();
+        let n = tokio::task::spawn_blocking(move || trust::refresh(&state, uid, &home)).await.map_err(failed)?.map_err(failed)?;
+        audit(uid, "trust-apps", "profile apps", &format!("{n} trusted"));
+        Ok(n as u32)
+    }
+
     #[zbus(signal)]
     async fn progress(emitter: &SignalEmitter<'_>, line: &str) -> zbus::Result<()>;
 }
@@ -588,7 +609,7 @@ async fn main() -> Result<()> {
     let config = Config::load()?;
     upgrade::recover_interrupted(&config);
     let last_use = Arc::new(std::sync::Mutex::new(Instant::now()));
-    let manager = Manager { config, busy: Mutex::new(()), last_use: last_use.clone() };
+    let manager = Manager { config, busy: Mutex::new(()), trust: Mutex::new(()), last_use: last_use.clone() };
     let conn = zbus::connection::Builder::system()?.name(BUS_NAME)?.serve_at(OBJECT_PATH, manager)?.build().await?;
     // Stale for two ticks in a row, so the reply to the call that switched has gone out.
     let mut stale_ticks = 0;

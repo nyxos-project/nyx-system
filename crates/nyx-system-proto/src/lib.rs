@@ -1025,6 +1025,9 @@ pub trait System {
     fn add_mount(&self, id: &str, mount: &str, login: &str) -> zbus::Result<String>;
     /// Add an account and set its password, with one authorization.
     fn add_person(&self, name: &str, full_name: &str, admin: bool, password: &str) -> zbus::Result<String>;
+    /// Trust the Nyx apps in the caller's own Nix profile that NyxOS's cache built
+    /// (`/etc/nyx/trusted-bin`); returns how many.
+    fn trust_apps(&self) -> zbus::Result<u32>;
     /// A line of build or switch output.
     #[zbus(signal)]
     fn progress(&self, line: &str) -> zbus::Result<()>;

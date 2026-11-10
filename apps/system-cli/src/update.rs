@@ -1,25 +1,31 @@
 //! `nyx-system update` (and `nyx update`, which hands off to it): the plan, asked about
-//! once, then carried out with its progress; `status` for what's available and `history`
-//! for what was done. `--json` gives Settings and the Store the same plan and outcome
-//! (`--yes --json`: no questions, the outcome on stdout, progress on stderr).
+//! once, then carried out with its progress; `check` for what's available, `status` for
+//! everything installed and its state, `auto` for the daily run, and `history` for what
+//! was done. `--json` gives Settings and the Store the same plan and outcome
+//! (`--yes --json`: no questions, the outcome on stdout, progress on stderr; a step that
+//! failed is in the outcome, and the exit code stays 0).
 
+use crate::exit;
 use anyhow::{Result, bail};
 use nyx_system_proto::HistoryEntry;
-use nyx_update::policy::{self, Network};
+use nyx_update::cache::{self, Checked};
+use nyx_update::policy::{self, Network, Policy};
 use nyx_update::run::Outcome;
-use nyx_update::{Category, Item, Pick, Plan, Snapshot, Step, Target};
-use std::io::IsTerminal;
+use nyx_update::{Ambiguous, Category, Item, Pick, Plan, Snapshot, Step, Target, Unknown};
 
 pub const USAGE: &str = "  nyx-system update [TARGET...] [--dry-run] [--yes] [--json]
-                                          Update everything, or: system (NixOS, Nyx apps),
-                                          apps (Flatpaks, your Nix profile), tools
-                                          (coding agents, your mise and uv tools),
-                                          firmware, or one thing by
+                                          Update everything, or: system (NixOS, Nyx apps
+                                          built into the desktop), apps (your apps,
+                                          Flatpaks), tools (coding agents, your mise
+                                          and uv tools), firmware, or one thing by
                                           name (claude, codex, firefox...). Plans
                                           first and asks; --dry-run only plans
+  nyx-system update check [--json]        What has updates (the last check's, offline)
   nyx-system update status [--notify] [--json]
-                                          What has updates (--notify: as a notification,
-                                          as the daily check does)
+                                          Everything installed: its version, what's
+                                          newer, how it updates and its update setting
+  nyx-system update auto [--now]          The daily run: installs what the update
+                                          settings say to, notifies about the rest
   nyx-system update history [N] [--json]  What was updated, newest first
   nyx-system update report [N] [--json]   How the last N (200) updates went: failures,
                                           rollbacks, restarts, typical times";
@@ -30,6 +36,7 @@ struct Flags {
     yes: bool,
     json: bool,
     notify: bool,
+    now: bool,
 }
 
 fn flags(args: &[&str]) -> Result<(Flags, Vec<String>)> {
@@ -41,26 +48,17 @@ fn flags(args: &[&str]) -> Result<(Flags, Vec<String>)> {
             "--yes" | "-y" => f.yes = true,
             "--json" => f.json = true,
             "--notify" => f.notify = true,
+            "--now" => f.now = true,
             // `nix profile upgrade --all`, as `nyx update` used to be.
             "--all" => {}
-            a if a.starts_with('-') => bail!("unknown option {a}; see nyx-system --help"),
+            a if a.starts_with('-') => return Err(exit::fail(exit::USAGE, format!("unknown option {a}; see nyx-system --help"))),
             a => names.push(a.to_string()),
         }
     }
     Ok((f, names))
 }
 
-fn confirm(question: &str) -> Result<bool> {
-    use std::io::Write;
-    if !std::io::stdin().is_terminal() {
-        return Ok(false);
-    }
-    print!("{question} [y/N] ");
-    std::io::stdout().flush()?;
-    let mut answer = String::new();
-    std::io::stdin().read_line(&mut answer)?;
-    Ok(matches!(answer.trim(), "y" | "Y" | "yes"))
-}
+use exit::confirm;
 
 pub async fn run(args: &[&str]) -> Result<()> {
     match args {
@@ -68,11 +66,51 @@ pub async fn run(args: &[&str]) -> Result<()> {
             println!("{}", USAGE.replace("  nyx-system update", "  nyx update"));
             Ok(())
         }
-        ["status", rest @ ..] => status(rest).await,
+        ["status", rest @ ..] => status(rest, false).await,
+        ["check", rest @ ..] => status(rest, true).await,
+        ["auto", rest @ ..] => auto(rest).await,
         ["history", rest @ ..] => history(rest).await,
         ["report", rest @ ..] => report(rest).await,
         _ => update(args).await,
     }
+}
+
+/// What each name stands for, asking which one a name means when it fits several and
+/// someone can be asked; an unknown or ambiguous name otherwise exits with
+/// [`exit::NAME`].
+fn picks(s: &Snapshot, targets: &[Target], names: &[String], ask: bool) -> Result<Vec<Pick>> {
+    if names.is_empty() {
+        return nyx_update::resolve_installed(s, targets, &[]);
+    }
+    let mut out = Vec::new();
+    for name in names {
+        match nyx_update::resolve_installed(s, targets, &[name.as_str()]) {
+            Ok(p) => out.extend(p),
+            Err(e) => {
+                if let Some(a) = e.downcast_ref::<Ambiguous>() {
+                    let i = exit::choose(name, &a.described, ask)?;
+                    out.push(Pick::Target(a.options[i]));
+                } else if let Some(u) = e.downcast_ref::<Unknown>() {
+                    return Err(exit::fail(exit::NAME, u.to_string()));
+                } else {
+                    return Err(e);
+                }
+            }
+        }
+    }
+    Ok(out)
+}
+
+/// The probe's result kept for later (offline, Settings' "last checked").
+fn remember(s: &Snapshot, targets: &[Target]) -> Checked {
+    let checked = Checked {
+        time: cache::now(),
+        status: nyx_update::status(s, targets),
+        targets: targets.to_vec(),
+        firmware: s.firmware.clone(),
+    };
+    cache::save(&checked);
+    checked
 }
 
 fn wants_firmware(names: &[String]) -> bool {
@@ -118,7 +156,9 @@ async fn update(args: &[&str]) -> Result<()> {
     let (f, names) = flags(args)?;
     let request = if names.is_empty() { "nyx update".to_string() } else { format!("nyx update {}", names.join(" ")) };
     match policy::network().await {
-        Network::Offline => bail!("there's no network connection, so nothing can be checked or downloaded"),
+        Network::Offline => {
+            return Err(exit::fail(exit::OFFLINE, "there's no network connection, so nothing can be checked or downloaded"));
+        }
         Network::Metered if !f.json => eprintln!("This is a metered connection; updates can download a lot."),
         _ => {}
     }
@@ -133,8 +173,8 @@ async fn update(args: &[&str]) -> Result<()> {
     });
     let check_seconds = started.elapsed().as_secs();
     let targets = nyx_update::targets(&snapshot);
-    let refs: Vec<&str> = names.iter().map(String::as_str).collect();
-    let picks = nyx_update::resolve_installed(&snapshot, &targets, &refs)?;
+    remember(&snapshot, &targets);
+    let picks = picks(&snapshot, &targets, &names, !f.yes && !f.json)?;
     let mut plan = nyx_update::plan(&snapshot, &targets, &picks, &request);
     plan.check_seconds = check_seconds;
 
@@ -165,7 +205,7 @@ async fn update(args: &[&str]) -> Result<()> {
     let mut firmware = has_firmware && !plan.firmware_implied && f.yes;
     if !f.yes {
         if !confirm("Update?")? {
-            bail!("nothing was changed");
+            return Err(exit::fail(exit::DECLINED, "nothing was changed"));
         }
         if has_firmware {
             firmware =
@@ -193,7 +233,8 @@ async fn update(args: &[&str]) -> Result<()> {
     }
     print_outcome(&outcome);
     if !outcome.ok() {
-        std::process::exit(1);
+        let some = outcome.steps.iter().any(|s| s.ok);
+        std::process::exit(if some { exit::PARTIAL } else { exit::FAILED });
     }
     Ok(())
 }
@@ -226,45 +267,211 @@ fn print_outcome(o: &Outcome) {
     }
 }
 
-async fn status(args: &[&str]) -> Result<()> {
+/// `status` (everything installed) or `check` (what has updates), with `--json` for
+/// Settings. Offline, both show the last check's and say so.
+async fn status(args: &[&str], check: bool) -> Result<()> {
     let (f, names) = flags(args)?;
     if !names.is_empty() {
-        bail!("nyx-system update status takes no names");
+        return Err(exit::fail(exit::USAGE, "nyx-system update status and check take no names"));
     }
     let settings = policy::Settings::load();
     if f.notify && !settings.check {
         return Ok(());
     }
-    if let Some(why) = policy::deferred(&settings, policy::network().await).filter(|_| f.notify) {
+    let net = policy::network().await;
+    if let Some(why) = policy::deferred(&settings, net).filter(|_| f.notify) {
         println!("Not checking now: {why}.");
         return Ok(());
     }
-    let snapshot = nyx_update::probe::probe(nyx_update::probe::Options { check: true, firmware: settings.firmware });
-    let targets = nyx_update::targets(&snapshot);
-    let st = nyx_update::status(&snapshot, &targets);
+    let offline = net == Network::Offline;
+    let checked = if offline {
+        match cache::load() {
+            Some(c) => c,
+            None => return Err(exit::fail(exit::OFFLINE, "there's no network connection, and nothing has been checked yet")),
+        }
+    } else {
+        let snapshot = nyx_update::probe::probe(nyx_update::probe::Options { check: true, firmware: settings.firmware });
+        let targets = nyx_update::targets(&snapshot);
+        remember(&snapshot, &targets)
+    };
     if f.json {
         #[derive(serde::Serialize)]
+        #[serde(rename_all = "camelCase")]
         struct Out<'a> {
             status: &'a nyx_update::Status,
             targets: &'a [Target],
             firmware: &'a nyx_update::Firmware,
+            /// When this was checked (seconds since the epoch).
+            last_checked: i64,
+            /// There's no network: this is the last check's.
+            offline: bool,
+            /// Each kind's update setting: off, check, notify or auto.
+            policies: std::collections::BTreeMap<Category, Policy>,
+            settings: &'a policy::Settings,
         }
-        println!("{}", serde_json::to_string_pretty(&Out { status: &st, targets: &targets, firmware: &snapshot.firmware })?);
+        let policies = Category::ALL.into_iter().map(|c| (c, settings.policy(c))).collect();
+        let out = Out {
+            status: &checked.status,
+            targets: &checked.targets,
+            firmware: &checked.firmware,
+            last_checked: checked.time,
+            offline,
+            policies,
+            settings: &settings,
+        };
+        println!("{}", serde_json::to_string_pretty(&out)?);
     } else {
-        if st.available.is_empty() {
-            println!("Everything is up to date.");
-        } else {
-            println!("Updates available:");
-            print_items(&st.available);
+        if offline {
+            println!("There's no network connection; this is what the check on {} found.", nyx_update::date(checked.time));
         }
-        for n in &st.notes {
+        if check {
+            if checked.status.available.is_empty() {
+                println!("Everything is up to date.");
+            } else {
+                println!("Updates available:");
+                print_items(&checked.status.available);
+            }
+        } else {
+            print_status(&checked, &settings);
+        }
+        for n in &checked.status.notes {
             println!("• {n}");
         }
     }
-    if f.notify && settings.notify {
+    if f.notify && settings.notify && !offline {
+        nyx_update::run::notify_available(&checked.status).await?;
+    }
+    Ok(())
+}
+
+/// Everything installed, by kind: its version, what's newer, how it updates.
+fn print_status(c: &Checked, settings: &policy::Settings) {
+    for cat in Category::ALL {
+        let list: Vec<&Target> = c.targets.iter().filter(|t| t.category == cat).collect();
+        let policy = match settings.policy(cat) {
+            Policy::Off => "not checked",
+            Policy::Check => "checked, no notification",
+            Policy::Notify => "notifies; you install",
+            Policy::Auto => "installed automatically",
+        };
+        println!("{} ({policy})", cat.title());
+        if list.is_empty() {
+            match (cat, &c.firmware) {
+                (Category::Firmware, nyx_update::Firmware::Unavailable { reason }) => println!("  {reason}"),
+                (Category::Firmware, nyx_update::Firmware::NotChecked) => println!("  not checked"),
+                _ => println!("  nothing with updates here"),
+            }
+            continue;
+        }
+        let width = list.iter().map(|t| t.name.chars().count()).max().unwrap_or(0).min(32);
+        for t in list {
+            let state = match (&t.installed, &t.available) {
+                (Some(i), Some(a)) => format!("{i} → {a}"),
+                (None, Some(a)) => format!("→ {a}"),
+                (Some(i), None) => format!("{i}, up to date"),
+                (None, None) => "with the system".into(),
+            };
+            println!("  {:<width$}  {state}  ({})", t.name, nyx_update::how(t));
+        }
+    }
+    println!("Checked {}.", nyx_update::date(c.time));
+}
+
+/// The daily run (the nyx-update-check timer): the person's own software in the
+/// categories set to `auto` is installed (at `install-at`, if set), what's set to
+/// `notify` is announced, and the system and firmware are never installed by it.
+async fn auto(args: &[&str]) -> Result<()> {
+    let (f, _) = flags(args)?;
+    let settings = policy::Settings::load();
+    if !settings.check {
+        return Ok(());
+    }
+    let net = policy::network().await;
+    if let Some(why) = policy::deferred(&settings, net) {
+        println!("Not checking now: {why}.");
+        return Ok(());
+    }
+    let watched: Vec<Category> = Category::ALL.into_iter().filter(|c| settings.policy(*c) != Policy::Off).collect();
+    let snapshot =
+        nyx_update::probe::probe(nyx_update::probe::Options { check: true, firmware: watched.contains(&Category::Firmware) });
+    let targets = nyx_update::targets(&snapshot);
+    remember(&snapshot, &targets);
+
+    let auto = settings.with(Policy::Auto);
+    let picks = nyx_update::unattended(&snapshot, &targets, &auto);
+    let mut installed: Vec<usize> = Vec::new();
+    if !picks.is_empty() {
+        let due = f.now || settings.install_at.is_none_or(|at| policy::within(at, local_time()));
+        if due {
+            let plan = nyx_update::plan(&snapshot, &targets, &picks, "automatic update");
+            println!("Updating {} in the background.", plan.items.iter().map(|i| i.name.as_str()).collect::<Vec<_>>().join(", "));
+            let outcome = nyx_update::run::execute(&plan, false, &mut |l| eprintln!("{l}")).await?;
+            if outcome.ok() {
+                installed = picks.iter().filter_map(|p| if let Pick::Target(i) = p { Some(*i) } else { None }).collect();
+                if settings.notify && !plan.items.is_empty() {
+                    let names: Vec<&str> = plan.items.iter().map(|i| i.name.as_str()).take(5).collect();
+                    let reopen = if outcome.restart.is_empty() {
+                        String::new()
+                    } else {
+                        format!("\nReopen {} to use the new versions.", outcome.restart.join(", "))
+                    };
+                    let _ = nyx_update::run::notify("Updated in the background", &format!("{}{reopen}", names.join(", "))).await;
+                }
+            } else {
+                let why: Vec<String> = outcome.steps.iter().filter(|s| !s.ok).map(|s| s.message.clone()).collect();
+                let _ = nyx_update::run::notify(
+                    "An automatic update failed",
+                    &format!("{}\nWhat failed was left as it was. Settings > Updates has the details.", why.join("; ")),
+                )
+                .await;
+            }
+        } else if let Some((h, m)) = settings.install_at {
+            schedule(h, m);
+            println!("Automatic updates wait for {h:02}:{m:02}.");
+        }
+    }
+
+    // Announce the rest of what's set to notify (or to auto, but only installable by hand).
+    let st = nyx_update::Status {
+        available: targets
+            .iter()
+            .enumerate()
+            .filter(|(i, t)| t.has_update() && !installed.contains(i))
+            .filter(|(_, t)| matches!(settings.policy(t.category), Policy::Notify | Policy::Auto))
+            .map(|(_, t)| Item {
+                name: t.name.clone(),
+                from: t.installed.clone(),
+                to: t.available.clone(),
+                how: nyx_update::how(t).into(),
+            })
+            .collect(),
+        notes: Vec::new(),
+    };
+    if settings.notify {
         nyx_update::run::notify_available(&st).await?;
     }
     Ok(())
+}
+
+/// The time of day here, as `date` has it (the system's time zone).
+fn local_time() -> (u8, u8) {
+    let out = std::process::Command::new("date").arg("+%H %M").output().ok();
+    let text = out.map(|o| String::from_utf8_lossy(&o.stdout).into_owned()).unwrap_or_default();
+    let mut it = text.split_whitespace().filter_map(|w| w.parse::<u8>().ok());
+    (it.next().unwrap_or(0), it.next().unwrap_or(0))
+}
+
+/// The automatic install, once, at `h:m` (a transient user timer; one at a time).
+fn schedule(h: u8, m: u8) {
+    let exe = std::env::current_exe().map(|p| p.display().to_string()).unwrap_or_else(|_| "nyx-system".into());
+    let _ = std::process::Command::new("systemd-run")
+        .args(["--user", "--unit=nyx-update-install", "--collect", "--quiet"])
+        .arg(format!("--on-calendar=*-*-* {h:02}:{m:02}:00"))
+        .args([exe.as_str(), "update", "auto", "--now"])
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .status();
 }
 
 /// The last `limit` entries of the system's history and the user's, newest first.

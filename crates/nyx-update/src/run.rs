@@ -96,7 +96,13 @@ pub async fn execute(plan: &Plan, firmware: bool, line: &mut dyn FnMut(&str)) ->
         let start = std::time::Instant::now();
         let result = match step {
             Step::System { channel, tools } => system(plan, *channel, tools, line).await,
-            Step::Profile { names } => user_step(plan, step, profile(names, line), start),
+            Step::Profile { names } => {
+                let result = profile(names, line).map(|(message, running)| {
+                    out.restart.extend(running);
+                    message
+                });
+                user_step(plan, step, result, start)
+            }
             Step::Flatpak { apps } => user_step(plan, step, flatpak(apps, line), start),
             Step::Mise { tools } => user_step(plan, step, mise(tools, line), start),
             Step::UvTools { tools } => user_step(plan, step, uv(tools, line), start),
@@ -232,8 +238,11 @@ fn stream_in(program: &str, args: &[String], cwd: Option<&std::path::Path>, line
     Ok(())
 }
 
-fn profile(names: &[String], line: &mut dyn FnMut(&str)) -> Result<String> {
+/// `nix profile upgrade`, then the session follows (trust, units, services restarted).
+/// Returns what was done and the programs still running from what it replaced.
+fn profile(names: &[String], line: &mut dyn FnMut(&str)) -> Result<(String, Vec<String>)> {
     line("== Updating your Nix profile");
+    let before: Vec<String> = nyx_catalog::profile().into_iter().flat_map(|e| e.store_paths).collect();
     let mut args = vec!["profile".to_string(), "upgrade".to_string()];
     if names.is_empty() {
         args.push("--all".into());
@@ -241,7 +250,43 @@ fn profile(names: &[String], line: &mut dyn FnMut(&str)) -> Result<String> {
         args.extend(names.iter().cloned());
     }
     stream("nix", &args, line)?;
-    Ok(if names.is_empty() { "Your Nix profile is up to date".into() } else { format!("Updated {}", names.join(", ")) })
+    let after: Vec<String> = nyx_catalog::profile().into_iter().flat_map(|e| e.store_paths).collect();
+    let replaced: Vec<String> = before.into_iter().filter(|p| !after.contains(p)).collect();
+    if !replaced.is_empty() {
+        nyx_catalog::after_profile_change(nyx_catalog::ProfileChange::Upgraded);
+    }
+    let message =
+        if names.is_empty() { "Your Nix profile is up to date".into() } else { format!("Updated {}", names.join(", ")) };
+    Ok((message, running_from(&replaced)))
+}
+
+/// The person's programs whose executable is in one of `paths` (replaced, so they run
+/// the old version until reopened). Nothing is stopped.
+pub fn running_from(paths: &[String]) -> Vec<String> {
+    if paths.is_empty() {
+        return Vec::new();
+    }
+    let uid = std::fs::metadata("/proc/self").map(|m| std::os::unix::fs::MetadataExt::uid(&m)).ok();
+    let mut out = Vec::new();
+    for entry in std::fs::read_dir("/proc").into_iter().flatten().flatten() {
+        let dir = entry.path();
+        if !entry.file_name().to_string_lossy().bytes().all(|b| b.is_ascii_digit()) {
+            continue;
+        }
+        if uid.is_some() && std::fs::metadata(&dir).map(|m| std::os::unix::fs::MetadataExt::uid(&m)).ok() != uid {
+            continue;
+        }
+        let Ok(exe) = std::fs::read_link(dir.join("exe")) else { continue };
+        let exe = exe.to_string_lossy();
+        if paths.iter().any(|p| exe.starts_with(&format!("{p}/"))) {
+            let name = exe.rsplit('/').next().unwrap_or_default();
+            let name = name.trim_start_matches('.').trim_end_matches("-wrapped").trim_end_matches(" (deleted)").to_string();
+            if !name.is_empty() && !out.contains(&name) {
+                out.push(name);
+            }
+        }
+    }
+    out
 }
 
 fn flatpak(apps: &[String], line: &mut dyn FnMut(&str)) -> Result<String> {
@@ -326,11 +371,21 @@ pub async fn notify_available(status: &crate::Status) -> Result<bool> {
         .collect();
     let more = status.available.len().saturating_sub(shown.len());
     let body = format!(
-        "{}{}\nRun nyx update, or open Settings > Software & Updates.",
+        "{}{}\nRun nyx update, or open Settings > Updates.",
         shown.join(", "),
         if more > 0 { format!(" and {more} more") } else { String::new() }
     );
     let summary = if status.available.len() == 1 { "An update is available" } else { "Updates are available" };
+    notify(summary, &body).await?;
+    if let Some(dir) = state.parent() {
+        std::fs::create_dir_all(dir)?;
+    }
+    std::fs::write(&state, serde_json::to_string(&fingerprint)?)?;
+    Ok(true)
+}
+
+/// A notification from NyxOS's updates, opening Settings when clicked.
+pub async fn notify(summary: &str, body: &str) -> Result<()> {
     let conn = zbus::Connection::session().await.context("can't reach the session bus")?;
     let hints: std::collections::HashMap<&str, zbus::zvariant::Value> =
         std::collections::HashMap::from([("desktop-entry", zbus::zvariant::Value::from("io.github.design_nexus.nyx.Settings"))]);
@@ -339,12 +394,8 @@ pub async fn notify_available(status: &crate::Status) -> Result<bool> {
         "/org/freedesktop/Notifications",
         Some("org.freedesktop.Notifications"),
         "Notify",
-        &("NyxOS", 0u32, "system-software-update", summary, body.as_str(), Vec::<&str>::new(), hints, -1i32),
+        &("NyxOS", 0u32, "system-software-update", summary, body, Vec::<&str>::new(), hints, -1i32),
     )
     .await?;
-    if let Some(dir) = state.parent() {
-        std::fs::create_dir_all(dir)?;
-    }
-    std::fs::write(&state, serde_json::to_string(&fingerprint)?)?;
-    Ok(true)
+    Ok(())
 }

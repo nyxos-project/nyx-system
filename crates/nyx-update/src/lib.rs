@@ -15,11 +15,12 @@
 //! for; [`plan`] says what updating it takes; [`run`] does it. Settings and the Store use
 //! the same engine through `nyx-system update --json`.
 
+pub mod cache;
 pub mod policy;
 pub mod probe;
 pub mod run;
 
-use anyhow::{Result, bail};
+use anyhow::Result;
 use nyx_system_proto::ToolPin;
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
@@ -184,13 +185,33 @@ pub struct ChannelApp {
 }
 
 /// An element of the user's Nix profile.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 pub struct ProfileElement {
     pub name: String,
     pub url: String,
     /// A coding agent (from the catalog's agent sections) counts as a tool.
     pub tool: bool,
     pub aliases: Vec<String>,
+    /// The version installed, from its store path.
+    #[serde(default)]
+    pub version: Option<String>,
+    /// The version the channel's head has, once checked.
+    #[serde(default)]
+    pub update: Option<String>,
+    /// Whether the newest version is known (it comes from the system's channel and
+    /// was checked); otherwise only `nix profile upgrade` finds out.
+    #[serde(default)]
+    pub known: bool,
+    /// The catalog's name for it (`Claude Code`), when it's a catalog item.
+    #[serde(default)]
+    pub title: Option<String>,
+}
+
+impl ProfileElement {
+    /// Whether upgrading it may bring something: news, or nobody knows.
+    pub fn may_update(&self) -> bool {
+        self.update.is_some() || !self.known
+    }
 }
 
 /// A Flatpak installed for the user.
@@ -324,11 +345,11 @@ pub fn targets(s: &Snapshot) -> Vec<Target> {
     for e in &s.profile {
         out.push(Target {
             id: e.name.clone(),
-            name: e.name.clone(),
+            name: e.title.clone().unwrap_or_else(|| e.name.clone()),
             category: if e.tool { Category::Tools } else { Category::Apps },
             provider: Provider::Profile,
-            installed: None,
-            available: None,
+            installed: e.version.clone(),
+            available: e.update.clone(),
             aliases: e.aliases.clone(),
             admin: false,
             restart: Restart::App,
@@ -412,8 +433,55 @@ pub enum Pick {
     Target(usize),
 }
 
+/// The words `nyx update` keeps for itself: the categories and its subcommands. No
+/// package is looked up under these.
+pub const RESERVED: &[&str] = &["system", "apps", "tools", "firmware", "check", "status", "history", "report", "auto", "help"];
+
+/// A name nothing installed answers to.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Unknown {
+    pub name: String,
+    pub suggestions: Vec<String>,
+    /// A tool NyxOS packages that isn't installed here.
+    pub not_installed: Option<String>,
+}
+
+impl std::fmt::Display for Unknown {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        if let Some(n) = &self.not_installed {
+            return write!(f, "{n} isn't installed here; nyx install {} installs it", self.name);
+        }
+        if self.suggestions.is_empty() {
+            write!(f, "nothing installed here is called {} (nyx update status lists what is)", self.name)
+        } else {
+            write!(f, "nothing installed here is called {}; did you mean {}?", self.name, self.suggestions.join(", "))
+        }
+    }
+}
+
+impl std::error::Error for Unknown {}
+
+/// A name several installed things answer to: their indices into the targets.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Ambiguous {
+    pub name: String,
+    pub options: Vec<usize>,
+    /// Each option's id and what it is, for the person to choose from.
+    pub described: Vec<(String, String)>,
+}
+
+impl std::fmt::Display for Ambiguous {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let list: Vec<String> = self.described.iter().map(|(id, what)| format!("  {id:<24} {what}")).collect();
+        write!(f, "{} could be any of these; name the one you mean:\n{}", self.name, list.join("\n"))
+    }
+}
+
+impl std::error::Error for Ambiguous {}
+
 /// Find what each of `names` stands for: a category, or the one installed target that
-/// answers to it. A name that fits several targets, or none, is an error that says so.
+/// answers to it. A name that fits none is an [`Unknown`] error, several an
+/// [`Ambiguous`] one.
 pub fn resolve(targets: &[Target], names: &[&str]) -> Result<Vec<Pick>> {
     if names.is_empty() {
         return Ok(Category::ALL.into_iter().map(Pick::Category).collect());
@@ -428,21 +496,19 @@ pub fn resolve(targets: &[Target], names: &[&str]) -> Result<Vec<Pick>> {
         match found.as_slice() {
             [one] => picks.push(Pick::Target(*one)),
             [] => {
-                let close = suggestions(targets, name);
-                if close.is_empty() {
-                    bail!("nothing installed here is called {name} (nyx update status lists what is)");
-                }
-                bail!("nothing installed here is called {name}; did you mean {}?", close.join(", "));
+                return Err(
+                    Unknown { name: name.to_string(), suggestions: suggestions(targets, name), not_installed: None }.into()
+                );
             }
             many => {
-                let list: Vec<String> = many
+                let described = many
                     .iter()
                     .map(|i| {
                         let t = &targets[*i];
-                        format!("  {:<24} {} ({})", t.id, t.name, how(t))
+                        (t.id.clone(), format!("{} ({})", t.name, how(t)))
                     })
                     .collect();
-                bail!("{name} could be any of these; name the one you mean:\n{}", list.join("\n"));
+                return Err(Ambiguous { name: name.to_string(), options: many.to_vec(), described }.into());
             }
         }
     }
@@ -464,9 +530,11 @@ pub fn resolve_installed(s: &Snapshot, targets: &[Target], names: &[&str]) -> Re
                     .tools
                     .iter()
                     .find(|(id, p)| !p.installed && (id.as_str() == n || p.name.to_lowercase() == n || p.aliases.contains(&n)));
-                match missing {
-                    Some((_, p)) => bail!("{} isn't installed here; Nyx Store or nyx-system catalog install it", p.name),
-                    None => return Err(e),
+                match (missing, e.downcast_ref::<Unknown>()) {
+                    (Some((_, p)), Some(u)) => {
+                        return Err(Unknown { not_installed: Some(p.name.clone()), ..u.clone() }.into());
+                    }
+                    _ => return Err(e),
                 }
             }
         }
@@ -604,7 +672,6 @@ pub fn plan(s: &Snapshot, targets: &[Target], picks: &[Pick], request: &str) -> 
     let mut channel = false;
     let mut tools: Vec<String> = Vec::new();
     let mut profile: Vec<String> = Vec::new();
-    let mut profile_all = false;
     let mut flatpaks: Vec<String> = Vec::new();
     let mut flatpak_all = false;
     let mut firmware: Vec<String> = Vec::new();
@@ -633,14 +700,7 @@ pub fn plan(s: &Snapshot, targets: &[Target], picks: &[Pick], request: &str) -> 
                             .push("Nyx apps and apps from nixpkgs come with the system channel, so this updates it too.".into());
                     }
                 }
-                let user_apps: Vec<&ProfileElement> = s.profile.iter().filter(|e| !e.tool).collect();
-                if !user_apps.is_empty() {
-                    if everything || s.profile.iter().all(|e| !e.tool) {
-                        profile_all = true;
-                    } else {
-                        profile.extend(user_apps.iter().map(|e| e.name.clone()));
-                    }
-                }
+                profile.extend(s.profile.iter().filter(|e| !e.tool && e.may_update()).map(|e| e.name.clone()));
                 let updatable = s.flatpaks.iter().any(|f| f.update.is_some()) || (!s.checked && !s.flatpaks.is_empty());
                 if updatable {
                     flatpak_all = true;
@@ -659,10 +719,7 @@ pub fn plan(s: &Snapshot, targets: &[Target], picks: &[Pick], request: &str) -> 
                         tools.push(t.id.clone());
                     }
                 }
-                let agents: Vec<String> = s.profile.iter().filter(|e| e.tool).map(|e| e.name.clone()).collect();
-                if !profile_all {
-                    profile.extend(agents);
-                }
+                profile.extend(s.profile.iter().filter(|e| e.tool && e.may_update()).map(|e| e.name.clone()));
                 let news = |tools: &[UserTool]| tools.iter().any(|t| t.update.is_some()) || (!s.checked && !tools.is_empty());
                 mise.0 |= news(&s.mise);
                 uv.0 |= news(&s.uv_tools);
@@ -720,7 +777,12 @@ pub fn plan(s: &Snapshot, targets: &[Target], picks: &[Pick], request: &str) -> 
                 }
                 (None, _) => p.notes.push(format!("{} is up to date ({}).", t.name, t.installed.as_deref().unwrap_or("?"))),
             },
-            Provider::Profile => profile.push(t.key.clone()),
+            Provider::Profile => match s.profile.iter().find(|e| e.name == t.key) {
+                Some(e) if !e.may_update() => {
+                    p.notes.push(format!("{} is up to date ({}).", t.name, t.installed.as_deref().unwrap_or("?")))
+                }
+                _ => profile.push(t.key.clone()),
+            },
             Provider::Flatpak => {
                 if t.has_update() || !s.checked {
                     flatpaks.push(t.key.clone());
@@ -772,13 +834,15 @@ pub fn plan(s: &Snapshot, targets: &[Target], picks: &[Pick], request: &str) -> 
         }
         p.steps.push(Step::System { channel: false, tools });
     }
-    if profile_all || !profile.is_empty() {
+    if !profile.is_empty() {
         profile.sort();
         profile.dedup();
-        let names = if profile_all { Vec::new() } else { profile };
-        let shown = if names.is_empty() { "your Nix profile".to_string() } else { names.join(", ") };
-        p.items.push(Item { name: shown, from: None, to: None, how: "nix profile upgrade (only what has news changes)".into() });
-        p.steps.push(Step::Profile { names });
+        for e in s.profile.iter().filter(|e| profile.contains(&e.name)) {
+            let how = if e.known { "your Nix profile" } else { "your Nix profile (only what has news changes)" };
+            let name = e.title.clone().unwrap_or_else(|| e.name.clone());
+            p.items.push(Item { name, from: e.version.clone(), to: e.update.clone(), how: how.into() });
+        }
+        p.steps.push(Step::Profile { names: profile });
     }
     if flatpak_all || !flatpaks.is_empty() {
         flatpaks.sort();
@@ -821,6 +885,22 @@ pub fn plan(s: &Snapshot, targets: &[Target], picks: &[Pick], request: &str) -> 
     p.admin = p.steps.iter().any(|s| matches!(s, Step::System { .. }));
     p.may_restart |= p.steps.iter().any(|s| matches!(s, Step::System { channel: true, .. }));
     p
+}
+
+/// What an unattended run may update in `categories`: the person's own software (their
+/// profile, Flatpaks, mise and uv tools) that has news, never the system or firmware.
+pub fn unattended(s: &Snapshot, targets: &[Target], categories: &[Category]) -> Vec<Pick> {
+    targets
+        .iter()
+        .enumerate()
+        .filter(|(_, t)| categories.contains(&t.category))
+        .filter(|(_, t)| match t.provider {
+            Provider::Profile => s.profile.iter().any(|e| e.name == t.key && e.may_update()),
+            Provider::Flatpak | Provider::Mise | Provider::UvTool => t.has_update(),
+            Provider::Channel | Provider::ToolPin | Provider::Firmware => false,
+        })
+        .map(|(i, _)| Pick::Target(i))
+        .collect()
 }
 
 /// What's available, for `nyx update status` and the daily check.

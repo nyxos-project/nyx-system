@@ -1,6 +1,6 @@
 # Updates on NyxOS
 
-How NyxOS updates itself, what owns each piece of software, and how `nyx update` puts it
+How NyxOS installs and updates software, what owns each piece, and how `nyx update` puts it
 together. The audit below is how things stood before the unified command (November 2026);
 the sections after it describe what replaced it.
 
@@ -25,6 +25,40 @@ the sections after it describe what replaced it.
 - CI checked formatting and `nix flake check` on each push; nothing watched upstream
   releases.
 
+## Who it's installed for
+
+Apps and tools are each person's own. A catalog item's `scope` says who gets it:
+
+- **For you** (the default): its packages, and its Nyx apps as `nyx-<name>`, go into the
+  person's Nix profile from the system's channel, `github:nyxos-project/nyxos/<branch>#NAME`
+  (the nyxos flake's `legacyPackages`: the channel's nixpkgs, its tool pins and its
+  standalone Nyx apps; unfree only for what the catalog marks unfree, after the license is
+  accepted). No password, no rebuild, other accounts unaffected; `nix profile upgrade`
+  moves it to the channel's head, which CI built and cached.
+- **For everyone**: base items, anything that turns on a service or adds a group, and the
+  Nyx apps built into the desktop (Settings, Store, Welcome, Files, Capture, Backup, Share,
+  Clipboard, Glimpse, Assistant, Activity, the shell). Through the System Manager, in one
+  rebuild.
+
+Names resolve one way everywhere (`Catalog::resolve`: id, name, aliases, command, packages,
+Nyx apps), so `nyx install claude`, `nyx update claude`, `nyx remove claude` and
+`nyx search claude` mean Claude Code; a name the catalog doesn't have is a package from the
+channel, for the person.
+
+Machines installed before this keep what NyxOS installed for everyone:
+`nyxos.standaloneApps = "system"` (the default; the installer writes `"per-user"`) keeps
+Notepad, Calculator, Archive and Photos enabled for everyone, and nothing moves by itself.
+`nyx-system catalog move NAME` (Settings > Software, "Move to My Account") adds it to the
+person's profile first, then removes it for everyone in one rebuild.
+
+A Nyx app in someone's profile is trusted like the system's: the System Manager's
+`TrustApps` adds the `bin` folders of the Nyx apps in the caller's profile that NyxOS's
+cache signed to `/etc/nyx/trusted-bin` (Accounts, Clipboard, app actions and the shell
+know programs by it; a person can't add a program of their own by building something
+called nyx-mail). The `nyx-profile-units` user generator links their user units and the
+ones they start with the session (`share/nyx/autostart`), with the PATH the system's get.
+Each profile change, and each sign-in, runs both.
+
 ## Who owns what
 
 Every piece of software has one way it's updated. Nothing else may change it.
@@ -32,8 +66,8 @@ Every piece of software has one way it's updated. Nothing else may change it.
 | Software | Comes from | Updated by | Self-updater |
 | --- | --- | --- | --- |
 | NixOS, the kernel, NyxOS modules | nixpkgs and nyxos, through the channel | `nyx update system` | none |
-| Nyx apps | nyx-packages, through the channel | `nyx update system` (`apps` says so) | none |
-| Catalog apps from nixpkgs (Firefox, GIMP…) | nixpkgs, through the channel | `nyx update system` | none |
+| Nyx apps built into the desktop | nyx-packages, through the channel | `nyx update system` | none |
+| Standalone Nyx apps, catalog apps, packages from `nyx install` | the channel, in the person's profile | `nyx update apps` / `nyx update NAME` (`nix profile upgrade`) | none |
 | Claude Code (`claude`) | nyxos tool pin, Anthropic's release bucket | `nyx update claude` | `DISABLE_AUTOUPDATER=1` |
 | Codex CLI (`codex`) | nyxos tool pin, GitHub release (OpenAI's package of static binaries) | `nyx update codex` | startup check off (`-c check_for_update_on_startup=false`) |
 | Cursor Agent (`cursor-agent`) | nyxos tool pin, Cursor's download server | `nyx update cursor-agent` | `--disable-auto-update` |
@@ -46,11 +80,15 @@ Every piece of software has one way it's updated. Nothing else may change it.
 | ChatGPT desktop | nyxos tool pin, OpenAI's Debian repository | `nyx update chatgpt-desktop` | none (the .deb relies on apt) |
 | Herdr desktop | nyxos tool pin, releases.herdr.dev | `nyx update herdr-app` | off: its icon isn't beside the binary |
 | oh-my-pi and other flakes in a user's profile | the user's Nix profile | `nyx update omp` (`nix profile upgrade`) | none |
-| Packages a user installed with `nyx install` | the user's Nix profile | `nyx update NAME` | none |
 | Flatpaks | Flathub, per user | `nyx update apps` / `nyx update NAME` | none |
 | Languages and tools from mise (Node, Go, Zig, project CLIs) | the user's mise config, `~/.config/mise/config.toml` | `nyx update tools` / `nyx update NAME` (`mise upgrade`) | none (Nix's mise has none) |
 | Python tools from `uv tool install` | the user's uv tools, `~/.local/bin` | `nyx update tools` / `nyx update NAME` (`uv tool upgrade`) | none |
 | Firmware | fwupd and LVFS | `nyx update firmware`, always asked | n/a |
+
+The tools are pinned in nyxos, and installed per person from the channel (so their
+update is that person's `nix profile upgrade` to the channel's newer pin). A tool someone
+installed for everyone (`nyx-system install`, or a machine from before) is updated by the
+System Manager, as below.
 
 Gemini CLI and Pi Forge aren't packaged: the catalog offers Antigravity CLI as Gemini
 CLI's successor. A tool joins this table by getting a pin.
@@ -92,14 +130,15 @@ changes, so a pin is only ever built by the recipe it was validated with.
 
 A system builds its tools from the channel's pins, except where
 `/etc/nyxos/overrides/tools.json` has a newer one with the same recipe. That file is how
-one tool is updated on its own: `nyx update claude` copies Claude's pin from the head of
-the channel into it and rebuilds, so only Claude changes. A system update makes the
+one tool installed for everyone is updated on its own: `nyx update claude` copies Claude's
+pin from the head of the channel into it and rebuilds, so only Claude changes. A system update makes the
 channel's pins current again and empties the file. The effective pins, and which tools
 are installed, are in `/etc/nyxos/tools.json`.
 
 ## Package CI
 
-nyxos `.github/workflows/tool-updates.yml` runs daily (and by hand):
+nyxos `.github/workflows/tool-updates.yml` runs every six hours (and by hand, for one tool
+or all):
 
 1. `propose` (read-only, no secrets), once per tool: `scripts/update-tool NAME` asks the
    upstream's release feed for its newest stable release, verifies the hash against what
@@ -109,8 +148,37 @@ nyxos `.github/workflows/tool-updates.yml` runs daily (and by hand):
    `tool-update/NAME`, force-pushed so there's only ever one per tool; a failing one opens
    or updates the issue "Tool update failed: NAME", and the last validated pin stays.
 
-PRs are never merged automatically. A merged PR lands on `main` (testing); `stable`
-moves when the known-good process promotes it, and that's when stable machines see it.
+A pin's `update` object sets how CI treats it: `"enabled": false` keeps CI off it (and
+`upstream.kind = "manual"` tools have no feed to check), and `"autoMerge": true` lets a
+release that isn't a new major version merge itself once the required checks pass
+(`gh pr merge --auto`; branch protection decides which checks). Every pin starts with
+auto-merge off: a person reviews each PR until a tool has a record of clean updates, and
+breaking packaging changes (a new `recipe`) are never a pin-only PR. A pull request merged
+by the workflow's token starts no CI on `main`, so `publish` starts it when `main`'s head has
+none: that run is what fills the cache.
+
+A merged PR lands on `main` (testing); `stable` moves when the known-good process promotes
+it, and that's when stable machines see it.
+
+Every action in the workflows is pinned to a commit (Dependabot proposes new ones), and a
+`tool-update/*` build gets no Cachix token at all: it runs a new upstream binary.
+
+Generic updaters (`nix-update`) don't fit these pins: they're JSON with vendor manifests,
+and `update-tool` checks each hash against what the vendor published. x86_64-linux is the
+only platform today; `srcs` is keyed by system for when aarch64 has runners and releases.
+
+### Adding a tool
+
+1. A recipe in nyxos `pkgs/NAME/default.nix` reading `pin.version` and
+   `pin.srcs.${system}`, with its self-updater turned off, and a line in
+   `pkgs/tools/overlay.nix`.
+2. Its pin in `pkgs/tools/sources.json` (`name`, `version`, `recipe: 1`, `aliases`, `srcs`,
+   `upstream`), and an `upstream.kind` `scripts/update-tool` knows (or `manual`).
+3. Its smoke test in `checks/tools.nix` (`smoke.NAME`: its command, the arguments for its
+   version and help, the environment it needs offline), or none for a desktop app.
+4. A catalog item in nyx-system's `catalog.toml` (`packages = ["NAME"]`, `unfree` as
+   nixpkgs would say, `bin`, `aliases`), in `coding-agents` or `agent-apps` to count as a
+   tool.
 
 `publish` uses the run's own token, so there's no secret to keep: the repository allows
 Actions to create pull requests, and since a pull request opened that way starts no CI
@@ -122,23 +190,38 @@ binaries reach the cache only after review.
 
 ```text
 nyx update                 everything (firmware is checked and asked about)
-nyx update system          the channel: NixOS, NyxOS, Nyx apps, nixpkgs apps
-nyx update apps            Flatpaks and your Nix-profile packages (and the channel, if Nyx apps changed)
-nyx update tools           every pinned tool, in one rebuild; profile tools; your mise and uv tools
+nyx update system          the channel: NixOS, NyxOS, the Nyx apps built into the desktop
+nyx update apps            your own apps (your Nix profile) and Flatpaks
+nyx update tools           coding agents (yours; pinned ones for everyone in one rebuild), your mise and uv tools
 nyx update firmware        fwupd devices, always asked
 nyx update NAME…           what NAME is, wherever it comes from
 nyx update … --dry-run     the plan only
 nyx update … --yes         don't ask
 nyx update … --json        the plan or result as JSON
+nyx update check           what has updates (offline: the last check's, and when)
+nyx update status          everything installed: version, what's newer, how, its update setting
+nyx update auto [--now]    the daily run (see Update settings)
 nyx update history         what was updated, when, how long it took and how it went
 nyx update report          failures, rollbacks, restarts and typical times
-nyx update status          what's available (--notify: as a notification)
 ```
+
+Profile packages from the channel have real versions: what's installed comes from the
+store path, what's new from the channel's head (a tool's pin, or one evaluation of the
+other packages' versions at the head's revision), and only what has news is upgraded.
+Afterwards the programs still running from what was replaced are named ("reopen X");
+nothing is stopped, and Nix never replaces a running binary in place.
+
+`system`, `apps`, `tools`, `firmware`, `check`, `status`, `history`, `report`, `auto` and
+`help` are never package names. A name that fits several things is asked about on a
+terminal (a numbered list) and otherwise fails with the list.
+
+Exit codes, for scripts: 0 done or nothing to do, 1 failed, 2 usage, 3 partly updated
+(what failed was left as it was), 4 a name that isn't installed or fits several things, 5
+no network, 6 another update or system change running, 7 declined. With `--json` a failed
+step is in the outcome and the code stays 0 (Settings and the Store read the outcome).
 
 `nyx-system update` is the same command. Names resolve across everything: tool ids,
 the names their commands have, catalog ids, Nyx apps, profile packages and Flatpaks.
-When a name fits more than one thing (`cursor`: Cursor Agent and the Cursor IDE) the
-command lists them and does nothing.
 
 The engine is the `nyx-update` crate, shared by the command, Settings and the Store.
 System-level steps (the channel and tool pins) go to the System Manager's `Upgrade`
@@ -155,7 +238,11 @@ itself.
   starts, from `/var/lib/nyx-system/update-in-progress`.
 - Under 3 GB free in `/nix`, an update doesn't start.
 - One change at a time: the manager's lock for system steps, a per-user lock for the
-  rest.
+  rest (and Nix's own lock on a profile).
+- A profile upgrade keeps the previous profile generation until garbage collection:
+  `nyx rollback` (Settings > Updates, "Your apps and tools") puts it back. That's separate
+  from the system's generations, and neither covers firmware. There's no rollback across
+  the system, apps, tools and firmware together.
 - The kernel track and the boot loader don't change with an update; a kernel, initrd or
   systemd change is reported as needing a restart, and apps still running from replaced
   files are listed.
@@ -177,10 +264,33 @@ failed (and the failure rate) or found nothing new, rollbacks and whether they w
 the user's own updates, restarts needed, the typical (median) time of each stage, and the
 longest update. `--json` gives the same.
 
-## Checking automatically
+## Update settings
 
-The `nyx-update-check` user timer runs `nyx-system update status --notify` daily. It
-skips metered connections unless `updates.check-on-metered` is on, and notifies only when
-what's available changes. Settings in the `updates` domain (`nyx-system config set
-updates KEY VALUE`): `check` (true), `notify` (true), `check-on-metered` (false),
-`firmware` (true: include firmware in checks).
+Each person's, in the `updates` domain (`nyx-system config set updates KEY VALUE`, or
+Settings > Updates):
+
+| Key | Values | Default |
+| --- | --- | --- |
+| `system` | `off`, `check`, `notify`, `auto` | `notify` |
+| `apps` | the same | `auto` |
+| `tools` | the same | `auto` |
+| `firmware-policy` | the same | `notify` |
+| `install-at` | `"HH:MM"`, when automatic installs run | unset: when found |
+| `check` | `false` turns every kind off | `true` |
+| `notify` | notifications for news, automatic installs and failures | `true` |
+| `check-on-metered` | check and install on metered connections | `false` |
+| `firmware` | include firmware in checks | `true` |
+
+`off` doesn't check; `check` shows it in Settings and `nyx update status` without a
+notification; `notify` notifies and waits for the person; `auto` installs it. Only the
+person's own software installs unattended (their profile, Flatpaks, mise and uv): for the
+system and firmware, `auto` means `notify`, so an unattended run never rebuilds the
+system, asks for a password or flashes firmware.
+
+The `nyx-update-check` user timer runs `nyx-system update auto` daily: it installs what's
+set to `auto` (with `install-at`, a one-time `nyx-update-install` user timer waits for
+that time), notifies about the rest once per set of updates, notifies when an automatic
+install fails (what failed is left as it was), and keeps the check in
+`~/.cache/nyx/update-status.json` for Settings' "last checked" and for when there's no
+network. It waits out metered connections unless allowed and does nothing when `check` is
+off.
