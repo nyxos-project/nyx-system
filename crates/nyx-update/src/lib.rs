@@ -442,14 +442,14 @@ pub const RESERVED: &[&str] = &["system", "apps", "tools", "firmware", "check", 
 pub struct Unknown {
     pub name: String,
     pub suggestions: Vec<String>,
-    /// A tool NyxOS packages that isn't installed here.
-    pub not_installed: Option<String>,
+    /// A tool NyxOS packages that isn't installed here: its name and its id.
+    pub not_installed: Option<(String, String)>,
 }
 
 impl std::fmt::Display for Unknown {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        if let Some(n) = &self.not_installed {
-            return write!(f, "{n} isn't installed here; nyx install {} installs it", self.name);
+        if let Some((name, id)) = &self.not_installed {
+            return write!(f, "{name} isn't installed here; nyx install {id} installs it");
         }
         if self.suggestions.is_empty() {
             write!(f, "nothing installed here is called {} (nyx update status lists what is)", self.name)
@@ -492,7 +492,13 @@ pub fn resolve(targets: &[Target], names: &[&str]) -> Result<Vec<Pick>> {
             picks.push(Pick::Category(c));
             continue;
         }
-        let found: Vec<usize> = targets.iter().enumerate().filter(|(_, t)| t.answers_to(name)).map(|(i, _)| i).collect();
+        let mut found: Vec<usize> = targets.iter().enumerate().filter(|(_, t)| t.answers_to(name)).map(|(i, _)| i).collect();
+        // An app that comes with the system only updates with it: when the person also has
+        // their own copy of the same app (their profile), the name means that one.
+        let with_system = |i: usize| targets[i].provider == Provider::Channel && targets[i].category != Category::System;
+        let same = |a: usize, b: usize| targets[a].id == targets[b].id || targets[a].name == targets[b].name;
+        let all = found.clone();
+        found.retain(|&i| !(with_system(i) && all.iter().any(|&j| !with_system(j) && same(i, j))));
         match found.as_slice() {
             [one] => picks.push(Pick::Target(*one)),
             [] => {
@@ -531,8 +537,8 @@ pub fn resolve_installed(s: &Snapshot, targets: &[Target], names: &[&str]) -> Re
                     .iter()
                     .find(|(id, p)| !p.installed && (id.as_str() == n || p.name.to_lowercase() == n || p.aliases.contains(&n)));
                 match (missing, e.downcast_ref::<Unknown>()) {
-                    (Some((_, p)), Some(u)) => {
-                        return Err(Unknown { not_installed: Some(p.name.clone()), ..u.clone() }.into());
+                    (Some((id, p)), Some(u)) => {
+                        return Err(Unknown { not_installed: Some((p.name.clone(), id.clone())), ..u.clone() }.into());
                     }
                     _ => return Err(e),
                 }

@@ -346,3 +346,11 @@ fn unknown_and_ambiguous_names_are_typed() {
         assert!(RESERVED.contains(&word) && matches!(resolve(&t, &[word]).unwrap()[0], Pick::Category(_)));
     }
 }
+
+#[test]
+fn the_persons_own_copy_wins_over_the_systems() {
+    let mut s = machine();
+    s.apps.push(ChannelApp { id: "nyx-notepad".into(), name: "Nyx Notepad".into(), aliases: vec!["notepad".into()] });
+    let p = plan_for(&s, &["notepad"]).unwrap();
+    assert_eq!(p.steps, vec![Step::Profile { names: vec!["nyx-notepad".into()] }]);
+}

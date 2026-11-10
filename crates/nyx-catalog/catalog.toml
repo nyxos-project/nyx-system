@@ -667,6 +667,8 @@ summary = "One library for games from everywhere."
 category = "games"
 tier = "welcome"
 packages = ["lutris"]
+# Its runtime brings Steam's, which isn't free.
+unfree = true
 bin = "lutris"
 
 [[item]]

@@ -363,6 +363,21 @@ fn print_status(c: &Checked, settings: &policy::Settings) {
             }
             continue;
         }
+        // Apps that come with the system update with it: one line, not one each.
+        let with_system: Vec<&str> = list
+            .iter()
+            .filter(|t| t.provider == nyx_update::Provider::Channel && cat != Category::System)
+            .map(|t| t.name.as_str())
+            .collect();
+        let list: Vec<&Target> =
+            list.into_iter().filter(|t| t.provider != nyx_update::Provider::Channel || cat == Category::System).collect();
+        if !with_system.is_empty() {
+            println!(
+                "  {} app{} built into the system, updated with it",
+                with_system.len(),
+                if with_system.len() == 1 { "" } else { "s" }
+            );
+        }
         let width = list.iter().map(|t| t.name.chars().count()).max().unwrap_or(0).min(32);
         for t in list {
             let state = match (&t.installed, &t.available) {
