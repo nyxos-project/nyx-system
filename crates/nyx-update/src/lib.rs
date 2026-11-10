@@ -110,6 +110,10 @@ pub struct Target {
     /// A tool whose newer pin is built differently now: it comes with the system update.
     #[serde(default)]
     pub needs_channel: bool,
+    /// Whether a newer version could be known (it's checked only when it updates: a
+    /// profile package from outside the system's channel).
+    #[serde(default = "yes")]
+    pub checkable: bool,
     /// The provider's own handle: a firmware device id, a profile element, a Flatpak id.
     pub key: String,
 }
@@ -123,6 +127,10 @@ impl Target {
     pub fn has_update(&self) -> bool {
         self.available.is_some()
     }
+}
+
+fn yes() -> bool {
+    true
 }
 
 /// A channel revision.
@@ -304,6 +312,7 @@ pub fn targets(s: &Snapshot) -> Vec<Target> {
         restart: Restart::Computer,
         rollback: true,
         needs_channel: false,
+        checkable: true,
         key: "channel".into(),
     });
     for (id, pin) in s.tools.iter().filter(|(_, p)| p.installed) {
@@ -323,6 +332,7 @@ pub fn targets(s: &Snapshot) -> Vec<Target> {
             restart: Restart::App,
             rollback: true,
             needs_channel: newer.is_some_and(|h| h.recipe != pin.recipe),
+            checkable: true,
             key: id.clone(),
         });
     }
@@ -339,6 +349,7 @@ pub fn targets(s: &Snapshot) -> Vec<Target> {
             restart: Restart::App,
             rollback: true,
             needs_channel: false,
+            checkable: true,
             key: "channel".into(),
         });
     }
@@ -355,6 +366,7 @@ pub fn targets(s: &Snapshot) -> Vec<Target> {
             restart: Restart::App,
             rollback: true,
             needs_channel: false,
+            checkable: e.known,
             key: e.name.clone(),
         });
     }
@@ -371,6 +383,7 @@ pub fn targets(s: &Snapshot) -> Vec<Target> {
             restart: Restart::App,
             rollback: false,
             needs_channel: false,
+            checkable: true,
             key: f.id.clone(),
         });
     }
@@ -388,6 +401,7 @@ pub fn targets(s: &Snapshot) -> Vec<Target> {
                 restart: Restart::App,
                 rollback: false,
                 needs_channel: false,
+                checkable: true,
                 key: t.name.clone(),
             });
         }
@@ -406,6 +420,7 @@ pub fn targets(s: &Snapshot) -> Vec<Target> {
                 restart: Restart::Computer,
                 rollback: false,
                 needs_channel: false,
+                checkable: true,
                 key: d.id.clone(),
             });
         }

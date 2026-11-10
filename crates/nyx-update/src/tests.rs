@@ -316,6 +316,7 @@ fn profile_packages_have_versions_and_skip_what_is_current() {
     let notepad = t.iter().find(|t| t.id == "nyx-notepad").unwrap();
     assert_eq!(notepad.installed.as_deref(), Some("0.1.0-unstable-2026-11-01"));
     assert!(notepad.has_update() && !notepad.admin, "a per-user app updates without the password");
+    assert!(notepad.checkable && !t.iter().find(|t| t.id == "firefox").unwrap().checkable, "firefox comes from nixpkgs#");
     let p = plan_for(&s, &["openai-codex"]).unwrap();
     assert!(p.steps.is_empty() && p.notes[0].contains("up to date"), "{:?}", p);
     let p = plan_for(&s, &["notepad"]).unwrap();

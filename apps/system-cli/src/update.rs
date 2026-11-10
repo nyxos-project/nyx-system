@@ -383,7 +383,8 @@ fn print_status(c: &Checked, settings: &policy::Settings) {
             let state = match (&t.installed, &t.available) {
                 (Some(i), Some(a)) => format!("{i} → {a}"),
                 (None, Some(a)) => format!("→ {a}"),
-                (Some(i), None) => format!("{i}, up to date"),
+                (Some(i), None) if t.checkable => format!("{i}, up to date"),
+                (Some(i), None) => format!("{i}, checked when it updates"),
                 (None, None) => "with the system".into(),
             };
             println!("  {:<width$}  {state}  ({})", t.name, nyx_update::how(t));
