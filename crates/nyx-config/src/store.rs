@@ -19,10 +19,10 @@ use toml::{Table, Value};
 /// The key holding a file's schema version. It never reaches a component.
 pub const SCHEMA_KEY: &str = "schema";
 
-/// Brings a user file from one schema version to the next. `base` is everything below the
-/// user's layer (built-in values, NyxOS defaults, system overrides), for migrations that
-/// drop values equal to it.
-pub type Migration = fn(user: &mut Table, base: &Table);
+/// Brings a user file from one schema version to the next. `builtin` is the component's
+/// own values: what every setting was by default when a file from before was written
+/// (NyxOS's defaults didn't reach it then), for migrations that drop values equal to it.
+pub type Migration = fn(user: &mut Table, builtin: &Table);
 
 /// A settings domain and its schema history.
 #[derive(Debug, Clone, Copy)]
@@ -107,7 +107,7 @@ impl Store {
 
     /// The user's own values, migrated to the current schema (and the file rewritten, after
     /// a backup) or, if the file isn't valid TOML, set aside and treated as empty.
-    pub fn user(&self, base: &Table, problems: &mut Vec<Problem>) -> Table {
+    pub fn user(&self, problems: &mut Vec<Problem>) -> Table {
         let path = self.user_file();
         let text = match std::fs::read_to_string(&path) {
             Ok(t) => t,
@@ -133,7 +133,7 @@ impl Store {
         };
         let from = table.get(SCHEMA_KEY).and_then(Value::as_integer).unwrap_or(0).max(0) as u32;
         if from < self.domain.version {
-            if let Err(e) = self.migrate(&path, &mut table, from, base) {
+            if let Err(e) = self.migrate(&path, &mut table, from) {
                 problems.push(Problem { layer: Layer::User, message: format!("{e:#}") });
             }
         } else if from > self.domain.version {
@@ -150,12 +150,12 @@ impl Store {
         table
     }
 
-    fn migrate(&self, path: &Path, table: &mut Table, from: u32, base: &Table) -> Result<()> {
+    fn migrate(&self, path: &Path, table: &mut Table, from: u32) -> Result<()> {
         let backup = path.with_file_name(format!("{}.toml.v{from}.bak", self.domain.name));
         std::fs::copy(path, &backup).with_context(|| format!("can't back up {} before migrating it", path.display()))?;
         for step in from..self.domain.version {
             if let Some(m) = self.domain.migrations.get(step as usize) {
-                m(table, base);
+                m(table, &self.builtin);
             }
         }
         table.insert(SCHEMA_KEY.into(), Value::Integer(self.domain.version.into()));
@@ -165,7 +165,7 @@ impl Store {
     /// Built-in values, then every layer.
     pub fn load(&self) -> Loaded {
         let mut out = self.base();
-        let user = self.user(&out.table, &mut out.problems);
+        let user = self.user(&mut out.problems);
         merge(&mut out.table, user);
         out
     }
@@ -174,7 +174,7 @@ impl Store {
         let path = crate::key_path(key)?;
         let mut problems = Vec::new();
         let base = self.base();
-        let user = self.user(&base.table, &mut problems);
+        let user = self.user(&mut problems);
         let user_value = crate::lookup(&user, &path).cloned();
         let mut layer = None;
         for l in [Layer::System, Layer::Defaults] {
@@ -226,8 +226,7 @@ impl Store {
     /// Make sure the user's file is at the current schema before writing into it.
     fn stamp(&self) -> Result<()> {
         let mut problems = Vec::new();
-        let base = self.base();
-        let mut user = self.user(&base.table, &mut problems);
+        let mut user = self.user(&mut problems);
         let path = self.user_file();
         let current = std::fs::read_to_string(&path).ok().and_then(|t| t.parse::<Table>().ok());
         let stamped = current
@@ -267,9 +266,10 @@ fn same(a: &Value, b: &Value) -> bool {
     }
 }
 
-/// A migration from a file each component wrote whole to only what the user changed.
-pub fn drop_defaults(user: &mut Table, base: &Table) {
-    sparsify(user, base);
+/// A migration from a file each component wrote whole to only what the user changed:
+/// values equal to the component's own default go, and follow NyxOS's from now on.
+pub fn drop_defaults(user: &mut Table, builtin: &Table) {
+    sparsify(user, builtin);
 }
 
 fn set_aside(path: &Path) -> Result<PathBuf> {
@@ -368,6 +368,18 @@ mod tests {
         // Loading again doesn't migrate again.
         s.load();
         assert!(!s.layers.user.join("dock.toml.v1.bak").exists());
+    }
+
+    #[test]
+    fn an_old_file_follows_nyxos_where_it_held_the_built_in_value() {
+        let d = tempfile::tempdir().unwrap();
+        let s = store(d.path(), "icon_size = 48\nhide = \"smart\"\n");
+        std::fs::write(s.layers.defaults.join("dock.toml"), "schema = 1\nicon_size = 42\nhide = \"never\"\n").unwrap();
+        // Written whole before NyxOS's defaults reached it: 48 and smart were just the dock's own.
+        std::fs::write(s.user_file(), "icon_size = 48\nhide = \"always\"\n").unwrap();
+        let t = s.load().table;
+        assert_eq!(t["icon_size"].as_integer(), Some(42), "follows NyxOS's default");
+        assert_eq!(t["hide"].as_str(), Some("always"), "the user's own choice stays");
     }
 
     #[test]
