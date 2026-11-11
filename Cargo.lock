@@ -639,7 +639,7 @@ dependencies = [
 [[package]]
 name = "nyx-theme-core"
 version = "0.2.0"
-source = "git+https://github.com/design-nexus/nyx-design.git?rev=997a2c17d778e4c667a4f2ab2b1b16e28afcc522#997a2c17d778e4c667a4f2ab2b1b16e28afcc522"
+source = "git+https://github.com/design-nexus/nyx-design.git?rev=553f65567057150af4929033896531879528bbf4#553f65567057150af4929033896531879528bbf4"
 dependencies = [
  "nyx-config",
  "nyx-core",

@@ -41,6 +41,10 @@ async fn main() -> Result<()> {
         .serve_at(nyx_theme_core::dbus::PATH, svc)?
         .build()
         .await?;
+    // Holding the bus name, this is the theme service: the snapshot's only writer.
+    if let Err(e) = nyx_theme_core::snapshot::claim_service() {
+        eprintln!("nyx-themed: can't claim the snapshot: {e}");
+    }
     service::changed(&conn, &state, "start").await;
 
     let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
