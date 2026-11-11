@@ -191,7 +191,11 @@ fn foot(theme: &Theme) -> Result<()> {
 
 fn gtk(theme: &Theme) -> Result<()> {
     let scheme = if theme.palette.light { "'prefer-light'" } else { "'prefer-dark'" };
-    quiet(Command::new("dconf").args(["write", "/org/gnome/desktop/interface/color-scheme", scheme]))
+    quiet(Command::new("dconf").args(["write", "/org/gnome/desktop/interface/color-scheme", scheme]))?;
+    // GTK 3 windows (the file chooser among them), and what Nyx's own stylesheet leaves
+    // to the GTK theme in GTK 4, follow adw-gtk3 in the theme's appearance, as on Omarchy.
+    let theme_name = if theme.palette.light { "'adw-gtk3'" } else { "'adw-gtk3-dark'" };
+    quiet(Command::new("dconf").args(["write", "/org/gnome/desktop/interface/gtk-theme", theme_name]))
 }
 
 /// The Nyx wallpapers' manifest.
