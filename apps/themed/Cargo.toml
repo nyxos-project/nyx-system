@@ -9,7 +9,7 @@ repository.workspace = true
 
 [dependencies]
 nyx-config = { path = "../../crates/nyx-config" }
-nyx-theme-core = { git = "https://github.com/design-nexus/nyx-design.git", rev = "553f65567057150af4929033896531879528bbf4", default-features = false }
+nyx-theme-core = { git = "https://github.com/design-nexus/nyx-design.git", rev = "53bf2d729152ba82893963045f91efa3b8950f46", default-features = false }
 anyhow.workspace = true
 serde_json.workspace = true
 toml.workspace = true
