@@ -152,6 +152,46 @@ async fn authorize(conn: &Connection, header: &Header<'_>, action: &str) -> fdo:
     Ok(uid)
 }
 
+/// Whether the caller may read the settings, history and generations: root, an
+/// administrator (their update timer runs outside a session), or someone polkit allows
+/// (an active local session).
+async fn may_read(conn: &Connection, header: &Header<'_>) -> fdo::Result<()> {
+    let sender = header.sender().ok_or_else(|| fdo::Error::AccessDenied("no sender".into()))?.to_string();
+    let dbus = fdo::DBusProxy::new(conn).await?;
+    let uid = dbus.get_connection_unix_user(zbus::names::BusName::try_from(sender.as_str()).map_err(failed)?).await?;
+    if uid == 0 || administrator(uid, &std::fs::read_to_string("/etc/passwd").unwrap_or_default(), &std::fs::read_to_string("/etc/group").unwrap_or_default()) {
+        return Ok(());
+    }
+    if check(conn, &sender, action::READ, false).await?.0 {
+        return Ok(());
+    }
+    Err(fdo::Error::AccessDenied("only people signed in at this computer can read the system's settings".into()))
+}
+
+/// Whether `uid` is in the wheel group (as the group's member list or its own group).
+fn administrator(uid: u32, passwd: &str, group: &str) -> bool {
+    let Some((name, gid)) = passwd.lines().find_map(|l| {
+        let f: Vec<&str> = l.split(':').collect();
+        (f.len() > 3 && f[2].parse() == Ok(uid)).then(|| (f[0], f[3]))
+    }) else {
+        return false;
+    };
+    group.lines().any(|l| {
+        let f: Vec<&str> = l.split(':').collect();
+        f.len() > 3 && f[0] == "wheel" && (f[2] == gid || f[3].split(',').any(|m| m == name))
+    })
+}
+
+#[cfg(test)]
+#[test]
+fn administrators_are_in_wheel() {
+    let passwd = "root:x:0:0::/root:/bin/sh\nken:x:1000:100::/home/ken:/bin/zsh\namy:x:1001:100::/home/amy:/bin/zsh\n";
+    let group = "wheel:x:1:ken\nusers:x:100:\n";
+    assert!(administrator(1000, passwd, group));
+    assert!(!administrator(1001, passwd, group));
+    assert!(!administrator(4242, passwd, group));
+}
+
 pub fn audit(uid: u32, action: &str, what: &str, result: &str) {
     eprintln!("audit uid={uid} action={action} {what}: {result}");
 }
@@ -292,7 +332,8 @@ fn build_users_arent_people() {
 
 #[zbus::interface(name = "io.github.nyxos_project.System1")]
 impl Manager {
-    async fn settings(&self) -> fdo::Result<String> {
+    async fn settings(&self, #[zbus(header)] header: Header<'_>, #[zbus(connection)] conn: &Connection) -> fdo::Result<String> {
+        may_read(conn, &header).await?;
         self.touch();
         let s = self.config.read_settings().map_err(failed)?;
         serde_json::to_string(&s).map_err(failed)
@@ -407,13 +448,15 @@ impl Manager {
         serde_json::to_string(&result.map_err(failed)?).map_err(failed)
     }
 
-    async fn history(&self, limit: u32) -> fdo::Result<String> {
+    async fn history(&self, #[zbus(header)] header: Header<'_>, #[zbus(connection)] conn: &Connection, limit: u32) -> fdo::Result<String> {
+        may_read(conn, &header).await?;
         self.touch();
         let list = nyx_system_proto::read_history(&upgrade::history_file(&self.config), limit.min(1000) as usize);
         serde_json::to_string(&list).map_err(failed)
     }
 
-    async fn generations(&self) -> fdo::Result<String> {
+    async fn generations(&self, #[zbus(header)] header: Header<'_>, #[zbus(connection)] conn: &Connection) -> fdo::Result<String> {
+        may_read(conn, &header).await?;
         self.touch();
         serde_json::to_string(&generations::list().map_err(failed)?).map_err(failed)
     }

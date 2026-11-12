@@ -6,6 +6,15 @@
   <vendor>NyxOS</vendor>
   <vendor_url>https://github.com/nyxos-project/nyx-system</vendor_url>
 
+  <action id="io.github.nyxos_project.system.read">
+    <description>Read the system's settings and history</description>
+    <message>Only people signed in at this computer can read the system's settings and history</message>
+    <defaults>
+      <allow_any>no</allow_any>
+      <allow_inactive>no</allow_inactive>
+      <allow_active>yes</allow_active>
+    </defaults>
+  </action>
   <action id="io.github.nyxos_project.system.settings">
     <description>Change system settings</description>
     <message>Authentication is required to change system settings: the computer's name, time zone, language, keyboard, themes, or what the lid and power button do</message>

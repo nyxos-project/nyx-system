@@ -40,6 +40,9 @@ pub mod action {
     pub const PASSWORD: &str = "io.github.nyxos_project.system.password";
     /// Mounting drives and network shares at startup.
     pub const MOUNTS: &str = "io.github.nyxos_project.system.mounts";
+    /// Reading the settings, history and generations: people at the computer, not
+    /// other accounts (services, remote logins).
+    pub const READ: &str = "io.github.nyxos_project.system.read";
 }
 
 /// The effective tool pins a system was built with, and whether it installs each
