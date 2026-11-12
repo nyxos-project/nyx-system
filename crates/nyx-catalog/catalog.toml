@@ -407,14 +407,6 @@ tier = "welcome"
 nyx = ["torrents"]
 
 [[item]]
-id = "nyx-pulse"
-name = "Nyx Pulse"
-summary = "Telegram, with calls."
-category = "nyx-communication"
-tier = "welcome"
-nyx = ["pulse"]
-
-[[item]]
 id = "nyx-assistant"
 name = "Nyx Assistant"
 summary = "A local assistant you can talk to, with its HUD and Canvas."
