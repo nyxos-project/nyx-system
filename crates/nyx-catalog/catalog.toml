@@ -117,6 +117,11 @@ name = "Remote desktop and virtual machines"
 section = "desktop"
 
 [[category]]
+id = "accessibility"
+name = "Accessibility"
+section = "desktop"
+
+[[category]]
 id = "cli-base"
 name = "Essentials"
 section = "cli"
@@ -701,6 +706,16 @@ category = "chat"
 tier = "welcome"
 packages = ["telegram-desktop"]
 bin = "Telegram"
+
+[[item]]
+id = "orca"
+name = "Orca"
+summary = "Screen reader: reads the screen aloud and drives it from the keyboard. Super+Ctrl+Alt+S turns it on and off (Super+Alt+S at the login screen)."
+category = "accessibility"
+tier = "base"
+packages = ["orca"]
+bin = "orca"
+aliases = ["screen-reader"]
 
 [[item]]
 id = "gnome-boxes"
