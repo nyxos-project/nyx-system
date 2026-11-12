@@ -9,8 +9,14 @@ use std::sync::mpsc::Sender;
 /// What a job prints as it goes.
 pub type Log = Sender<String>;
 
+/// Building the system is the system's job, in NyxOS's words; anything else shows as
+/// its command.
+fn rebuilds(args: &[&str]) -> bool {
+    args.first().is_some_and(|p| p.ends_with("nixos-rebuild"))
+}
+
 pub fn run(log: &Log, args: &[&str], stdin: Option<&str>) -> Result<String> {
-    let _ = log.send(format!("$ {}", args.join(" ")));
+    let _ = log.send(if rebuilds(args) { "Building the system…".into() } else { format!("$ {}", args.join(" ")) });
     let mut child = Command::new(args[0])
         .args(&args[1..])
         .stdin(if stdin.is_some() { Stdio::piped() } else { Stdio::null() })
@@ -48,7 +54,11 @@ pub fn run(log: &Log, args: &[&str], stdin: Option<&str>) -> Result<String> {
     let status = child.wait()?;
     let why = errors.join().unwrap_or_default();
     if !status.success() {
-        bail!("{} failed: {}", args[0], if why.is_empty() { status.to_string() } else { why });
+        let why = if why.is_empty() { status.to_string() } else { why };
+        if rebuilds(args) {
+            bail!("The system couldn't be built: {why}");
+        }
+        bail!("{} failed: {why}", args[0]);
     }
     Ok(out)
 }

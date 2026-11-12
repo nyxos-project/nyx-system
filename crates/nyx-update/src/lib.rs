@@ -830,7 +830,7 @@ pub fn plan(s: &Snapshot, targets: &[Target], picks: &[Pick], request: &str) -> 
             name: targets[0].name.clone(),
             from: targets[0].installed.clone(),
             to: targets[0].available.clone(),
-            how: "the system channel: NixOS, Nyx apps, apps from nixpkgs".into(),
+            how: "the system channel: NyxOS, its Nyx apps and their packages".into(),
         });
         for t in targets.iter().filter(|t| t.provider == Provider::ToolPin && t.has_update()) {
             p.items.push(Item {

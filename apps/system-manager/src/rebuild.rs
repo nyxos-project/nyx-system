@@ -10,9 +10,23 @@ use zbus::object_server::SignalEmitter;
 
 const PROFILE: &str = "/nix/var/nix/profiles/system";
 
+/// What a command is, as progress shows it: building and switching the system in NyxOS's
+/// words, anything else as the command.
+fn shown(program: &str, args: &[&str]) -> String {
+    if !program.ends_with("nixos-rebuild") {
+        return format!("$ {program} {}", args.join(" "));
+    }
+    match args.first() {
+        Some(&"switch") => "Building the new system and switching to it…",
+        Some(&"boot") => "Building the new system for the next start…",
+        _ => "Building the new system…",
+    }
+    .into()
+}
+
 /// Run a command as root, sending each line it prints as progress.
 pub async fn run(emitter: &SignalEmitter<'_>, cwd: &Path, program: &str, args: &[&str]) -> Result<()> {
-    let _ = crate::Manager::progress(emitter, &format!("$ {program} {}", args.join(" "))).await;
+    let _ = crate::Manager::progress(emitter, &shown(program, args)).await;
     let mut child = tokio::process::Command::new(program)
         .args(args)
         .current_dir(cwd)
@@ -49,6 +63,9 @@ pub async fn run(emitter: &SignalEmitter<'_>, cwd: &Path, program: &str, args: &
     let status = child.wait().await?;
     if !status.success() {
         let why = [error, last].into_iter().find(|s| !s.is_empty()).unwrap_or_else(|| status.to_string());
+        if program.ends_with("nixos-rebuild") {
+            bail!("The new system couldn't be built: {why}");
+        }
         bail!("{program} failed: {why}");
     }
     Ok(())

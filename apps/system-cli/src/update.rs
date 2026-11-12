@@ -14,8 +14,8 @@ use nyx_update::run::Outcome;
 use nyx_update::{Ambiguous, Category, Item, Pick, Plan, Snapshot, Step, Target, Unknown};
 
 pub const USAGE: &str = "  nyx-system update [TARGET...] [--dry-run] [--yes] [--json]
-                                          Update everything, or: system (NixOS, Nyx apps
-                                          built into the desktop), apps (your apps,
+                                          Update everything, or: system (NyxOS and the
+                                          Nyx apps built into it), apps (your apps,
                                           Flatpaks), tools (coding agents, your mise
                                           and uv tools), firmware, or one thing by
                                           name (claude, codex, firefox...). Plans
