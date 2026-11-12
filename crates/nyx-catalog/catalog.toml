@@ -423,7 +423,7 @@ tier = "welcome"
 # Part of the desktop: its HUD, Canvas and speech services run with the session.
 scope = "system"
 nyx = ["assistant"]
-note = "Downloads its speech and language models the first time you set it up."
+note = "Downloads its speech and language models the first time you set it up. Listening for its name, using your location (ipapi.co) and searching the web stay off or ask until you choose in Settings."
 
 [[item]]
 id = "nyx-chat"
