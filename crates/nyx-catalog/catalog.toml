@@ -339,6 +339,15 @@ tier = "welcome"
 nyx = ["music"]
 
 [[item]]
+id = "nyx-lyra"
+name = "Nyx Lyra"
+summary = "YouTube Music, with your library and playlists."
+category = "nyx-media"
+tier = "welcome"
+nyx = ["lyra"]
+aliases = ["youtube-music", "ytmusic"]
+
+[[item]]
 id = "nyx-media-player"
 name = "Nyx Media Player"
 summary = "Play videos and music files."
