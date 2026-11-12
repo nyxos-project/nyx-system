@@ -651,6 +651,7 @@ fn stale() -> bool {
 async fn main() -> Result<()> {
     let config = Config::load()?;
     upgrade::recover_interrupted(&config);
+    rebuild::recover_staged(&config);
     let last_use = Arc::new(std::sync::Mutex::new(Instant::now()));
     let manager = Manager { config, busy: Mutex::new(()), trust: Mutex::new(()), last_use: last_use.clone() };
     let conn = zbus::connection::Builder::system()?.name(BUS_NAME)?.serve_at(OBJECT_PATH, manager)?.build().await?;

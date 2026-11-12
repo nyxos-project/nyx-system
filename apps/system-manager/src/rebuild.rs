@@ -76,28 +76,88 @@ fn rebuild_args<'a>(verb: &'a str, flake: &'a str, overrides: &'a str) -> [&'a s
     [verb, "--flake", flake, "--override-input", "nyxos-overrides", overrides]
 }
 
-/// Build the configuration, then switch to it. Progress lines starting `== ` name the
-/// stage.
-pub async fn build_and_switch(config: &Config, emitter: &SignalEmitter<'_>) -> Result<()> {
-    build(config, emitter).await?;
-    switch(config, emitter).await
+/// Build the configuration from the overrides layer `overrides`, then switch to it.
+/// Progress lines starting `== ` name the stage.
+async fn build_and_switch(config: &Config, overrides: &Path, emitter: &SignalEmitter<'_>) -> Result<()> {
+    rebuild(config, overrides, "build", "Building the new system", emitter).await?;
+    rebuild(config, overrides, "switch", "Switching to it", emitter).await
 }
 
 /// `nixos-rebuild VERB` for this machine, its stage named first.
-async fn rebuild(config: &Config, verb: &str, stage: &str, emitter: &SignalEmitter<'_>) -> Result<()> {
+async fn rebuild(config: &Config, overrides: &Path, verb: &str, stage: &str, emitter: &SignalEmitter<'_>) -> Result<()> {
     std::fs::create_dir_all(&config.state)?;
     let flake = format!("path:{}#{}", config.flake.display(), config.host);
-    let overrides = format!("path:{}", config.overrides.display());
+    let overrides = format!("path:{}", overrides.display());
     let _ = crate::Manager::progress(emitter, &format!("== {stage}")).await;
     run(emitter, &config.state, "nixos-rebuild", &rebuild_args(verb, &flake, &overrides)).await
 }
 
 pub async fn build(config: &Config, emitter: &SignalEmitter<'_>) -> Result<()> {
-    rebuild(config, "build", "Building the new system", emitter).await
+    rebuild(config, &config.overrides, "build", "Building the new system", emitter).await
 }
 
 pub async fn switch(config: &Config, emitter: &SignalEmitter<'_>) -> Result<()> {
-    rebuild(config, "switch", "Switching to it", emitter).await
+    rebuild(config, &config.overrides, "switch", "Switching to it", emitter).await
+}
+
+/// A change is built from a copy of the overrides layer with its settings
+/// (`staged-overrides`); the layer itself gets them only once the switch worked, so a
+/// change cut short (a crash, a power cut) never waits there for the next one.
+fn staged_dir(config: &Config) -> std::path::PathBuf {
+    config.state.join("staged-overrides")
+}
+
+/// The generation the staged change started from, kept beside it.
+const STAGED_FROM: &str = ".nyx-staged-from";
+
+fn copy_dir(from: &Path, to: &Path) -> Result<()> {
+    std::fs::create_dir_all(to)?;
+    let Ok(entries) = std::fs::read_dir(from) else { return Ok(()) };
+    for entry in entries {
+        let entry = entry?;
+        let target = to.join(entry.file_name());
+        if entry.file_type()?.is_dir() {
+            copy_dir(&entry.path(), &target)?;
+        } else {
+            std::fs::copy(entry.path(), target)?;
+        }
+    }
+    Ok(())
+}
+
+fn stage(config: &Config, new: &nyx_system_proto::SystemSettings, before: Option<u32>) -> Result<std::path::PathBuf> {
+    let dir = staged_dir(config);
+    let _ = std::fs::remove_dir_all(&dir);
+    copy_dir(&config.overrides, &dir)?;
+    let staged = Config { overrides: dir.clone(), ..config.clone() };
+    staged.write_settings(new)?;
+    std::fs::write(dir.join(STAGED_FROM), before.map(|g| g.to_string()).unwrap_or_default())?;
+    Ok(dir)
+}
+
+/// The staged settings into the overrides layer.
+fn commit_staged(config: &Config, dir: &Path) -> Result<()> {
+    let text = std::fs::read_to_string(dir.join("system.json"))?;
+    config.write_settings(&nyx_system_proto::SystemSettings::parse(&text)?)?;
+    let _ = std::fs::remove_dir_all(dir);
+    Ok(())
+}
+
+/// A change the manager didn't see through: kept if the system switched to it, else
+/// dropped. Run at start.
+pub fn recover_staged(config: &Config) {
+    let dir = staged_dir(config);
+    let Ok(from) = std::fs::read_to_string(dir.join(STAGED_FROM)) else {
+        let _ = std::fs::remove_dir_all(&dir);
+        return;
+    };
+    let before = from.trim().parse::<u32>().ok();
+    if generations::current() != before && commit_staged(config, &dir).is_ok() {
+        eprintln!("a system change was cut short after switching; its settings were kept");
+    } else {
+        let _ = std::fs::remove_dir_all(&dir);
+        eprintln!("a system change was cut short before switching; it was dropped");
+    }
 }
 
 /// Keep the settings the current generation was built from, for rollback.
@@ -126,18 +186,19 @@ pub async fn apply(config: &Config, changes: &[Change], emitter: &SignalEmitter<
     // The generation the system is on now keeps its settings, in case this one is rolled back.
     remember(config)?;
     let before = generations::current();
-    config.write_settings(&new)?;
+    let staged = stage(config, &new, before)?;
     let pre = snapshots::before("a change to the system settings", emitter).await;
-    let result = build_and_switch(config, emitter).await;
+    let result = build_and_switch(config, &staged, emitter).await;
     snapshots::after(pre, "a change to the system settings", emitter).await;
     if let Err(e) = result {
-        config.write_settings(&old)?;
+        let _ = std::fs::remove_dir_all(&staged);
         // A switch that failed may have moved the profile already.
         if generations::current() != before {
             let _ = previous_generation(emitter, &config.state).await;
         }
         return Err(anyhow::anyhow!("{e:#}; the change was undone, so nothing on the system changed"));
     }
+    commit_staged(config, &staged)?;
     remember(config)?;
     Ok("Applied".into())
 }
@@ -202,6 +263,27 @@ pub async fn vacuum_journal(config: &Config, megabytes: u32, emitter: &SignalEmi
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_staged_change_reaches_the_overrides_only_when_committed() {
+        let dir = tempfile::tempdir().unwrap();
+        let config = Config {
+            flake: dir.path().join("flake"),
+            host: "h".into(),
+            overrides: dir.path().join("overrides"),
+            state: dir.path().join("state"),
+        };
+        std::fs::create_dir_all(&config.overrides).unwrap();
+        std::fs::write(config.overrides.join("appearance.toml"), "theme = \"x\"\n").unwrap();
+        let old = config.read_settings().unwrap();
+        let new = old.with(&[Change::Service { name: "fwupd".into(), enabled: Some(true) }]).unwrap();
+        let staged = stage(&config, &new, Some(7)).unwrap();
+        assert_eq!(config.read_settings().unwrap(), old);
+        assert!(staged.join("appearance.toml").exists());
+        commit_staged(&config, &staged).unwrap();
+        assert_eq!(config.read_settings().unwrap(), new);
+        assert!(!staged.exists());
+    }
 
     #[test]
     fn going_back_puts_the_versions_back() {
