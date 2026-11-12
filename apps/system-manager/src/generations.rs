@@ -17,6 +17,16 @@ pub fn current() -> Option<u32> {
 }
 
 /// Newest first.
+/// A generation's NyxOS version (its os-release's `VERSION_ID`); NixOS's (`nixos-version`)
+/// for generations from before NyxOS had one.
+fn version_of(generation: &std::path::Path) -> String {
+    std::fs::read_to_string(generation.join("etc/os-release"))
+        .ok()
+        .and_then(|t| t.lines().find_map(|l| l.strip_prefix("VERSION_ID=")).map(|v| v.trim_matches('"').to_string()))
+        .filter(|v| !v.is_empty())
+        .unwrap_or_else(|| std::fs::read_to_string(generation.join("nixos-version")).unwrap_or_default().trim().to_string())
+}
+
 pub fn list() -> Result<Vec<Generation>> {
     let current = current();
     let mut out = Vec::new();
@@ -31,7 +41,7 @@ pub fn list() -> Result<Vec<Generation>> {
             .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
             .map(|d| d.as_secs() as i64)
             .unwrap_or(0);
-        let version = std::fs::read_to_string(entry.path().join("nixos-version")).unwrap_or_default().trim().to_string();
+        let version = version_of(&entry.path());
         out.push(Generation { number: n, created, version, current: Some(n) == current });
     }
     out.sort_by_key(|g| std::cmp::Reverse(g.number));

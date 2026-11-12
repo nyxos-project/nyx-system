@@ -36,6 +36,16 @@ fn target(path: &Path) -> Option<PathBuf> {
 }
 
 /// Newest first. `booted` is the running system (`/run/booted-system`).
+/// A generation's NyxOS version (its os-release's `VERSION_ID`); NixOS's (`nixos-version`)
+/// for generations from before NyxOS had one.
+pub fn generation_version(generation: &Path) -> String {
+    std::fs::read_to_string(generation.join("etc/os-release"))
+        .ok()
+        .and_then(|t| t.lines().find_map(|l| l.strip_prefix("VERSION_ID=")).map(|v| v.trim_matches('"').to_string()))
+        .filter(|v| !v.is_empty())
+        .unwrap_or_else(|| std::fs::read_to_string(generation.join("nixos-version")).unwrap_or_default().trim().to_string())
+}
+
 pub fn list(p: &Paths, booted: &Path) -> Result<Vec<Generation>> {
     let default = default_generation(p);
     let running = target(booted);
@@ -50,7 +60,7 @@ pub fn list(p: &Paths, booted: &Path) -> Result<Vec<Generation>> {
             .and_then(|m| m.modified().ok())
             .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
             .map_or(0, |d| d.as_secs() as i64);
-        let version = std::fs::read_to_string(entry.path().join("nixos-version")).unwrap_or_default().trim().to_string();
+        let version = generation_version(&entry.path());
         // Recovery itself is one of the generation's specialisations.
         let mut here: Vec<PathBuf> = target(&entry.path()).into_iter().collect();
         if let Ok(specs) = std::fs::read_dir(entry.path().join("specialisation")) {
@@ -234,6 +244,7 @@ mod tests {
         std::fs::write(root.join("store/gen41/etc/nyxos/built-from/system.json"), "{\"version\":1,\"hostname\":\"forty-one\"}")
             .unwrap();
         std::fs::write(root.join("store/gen41/etc/nyxos/built-from/flake.lock"), "lock41").unwrap();
+        std::fs::write(root.join("store/gen42/etc/os-release"), "NAME=NyxOS\nVERSION_ID=\"0.1.0\"\n").unwrap();
         std::fs::create_dir_all(root.join("state/generations")).unwrap();
         std::fs::write(root.join("state/generations/40.json"), "{\"version\":1,\"hostname\":\"forty\"}").unwrap();
         symlink("system-42-link", root.join("profiles/system")).unwrap();
@@ -259,7 +270,8 @@ mod tests {
         assert!(list[1].running && list[1].settings);
         assert!(list[2].settings, "the manager's copy counts");
         assert!(!list[0].settings);
-        assert_eq!(list[1].version, "26.05.41");
+        assert_eq!(list[0].version, "0.1.0", "NyxOS's version");
+        assert_eq!(list[1].version, "26.05.41", "NixOS's, from before NyxOS had one");
         assert_eq!(previous(&list), Some(41));
         // Booted into generation 40's recovery entry.
         std::fs::create_dir_all(t.path().join("store/gen40-recovery")).unwrap();
