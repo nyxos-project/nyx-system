@@ -281,6 +281,7 @@ summary = "Email, with your online accounts."
 category = "nyx-communication"
 tier = "welcome"
 nyx = ["mail"]
+note = "Google and Microsoft accounts need an OAuth client of your own for now (Settings › Accounts)."
 
 [[item]]
 id = "nyx-calendar"
@@ -289,6 +290,7 @@ summary = "Calendars, synced with your online accounts."
 category = "nyx-productivity"
 tier = "welcome"
 nyx = ["calendar"]
+note = "Google and Microsoft accounts need an OAuth client of your own for now (Settings › Accounts)."
 
 [[item]]
 id = "nyx-contacts"
@@ -374,11 +376,11 @@ nyx = ["home"]
 [[item]]
 id = "nyx-containers"
 name = "Nyx Containers"
-summary = "Manage Podman and Docker containers."
+summary = "Manage Incus and Docker containers and virtual machines."
 category = "nyx-tools"
 tier = "welcome"
 nyx = ["containers"]
-note = "Works with Podman or Docker; add one under Containers and infrastructure."
+note = "Works with Incus or Docker; add one under Containers and infrastructure."
 
 [[item]]
 id = "nyx-git"
@@ -391,7 +393,7 @@ nyx = ["git"]
 [[item]]
 id = "nyx-passwords"
 name = "Nyx Passwords"
-summary = "A password vault, with autofill."
+summary = "Your Vaultwarden vault: logins, notes, cards and keys."
 category = "nyx-productivity"
 tier = "welcome"
 nyx = ["passwords"]
