@@ -279,6 +279,16 @@ async fn run_upgrade(
             let r = run(emitter, &config.state, "nix", &["flake", "update", "--flake", &flake]).await;
             timed("download", t);
             r?;
+            // Stable moves only to a signed release; otherwise this is undone below.
+            let locked = std::fs::read_to_string(&lock).ok().and_then(|t| nyx_update::signed::channel_in_lock(&t));
+            if let Some(channel) = locked.filter(|c| c.needs_signature(Path::new(nyx_update::signed::SIGNERS))) {
+                stage(emitter, "Checking the release signature").await;
+                let tag = tokio::task::spawn_blocking(move || {
+                    nyx_update::signed::verify(&channel.url(), &channel.rev, Path::new(nyx_update::signed::SIGNERS))
+                })
+                .await??;
+                eprintln!("the channel is the signed release {tag}");
+            }
             // The channel brings every tool's pin.
             let _ = std::fs::remove_file(tools_file(config));
         } else {

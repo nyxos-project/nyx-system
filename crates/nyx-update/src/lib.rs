@@ -19,6 +19,7 @@ pub mod cache;
 pub mod policy;
 pub mod probe;
 pub mod run;
+pub mod signed;
 
 use anyhow::Result;
 use nyx_system_proto::ToolPin;

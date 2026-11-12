@@ -242,7 +242,18 @@ fn stream_in(program: &str, args: &[String], cwd: Option<&std::path::Path>, line
 /// Returns what was done and the programs still running from what it replaced.
 fn profile(names: &[String], line: &mut dyn FnMut(&str)) -> Result<(String, Vec<String>)> {
     line("== Updating your Nix profile");
-    let before: Vec<String> = nyx_catalog::profile().into_iter().flat_map(|e| e.store_paths).collect();
+    let elements = nyx_catalog::profile();
+    // Apps from NyxOS's stable channel update only to a signed release.
+    let signers = std::path::Path::new(crate::signed::SIGNERS);
+    let stable = elements.iter().any(|e| e.url.starts_with("github:nyxos-project/nyxos/stable") && (names.is_empty() || names.contains(&e.name)));
+    if stable && signers.is_file() {
+        let url = "https://github.com/nyxos-project/nyxos";
+        let out = std::process::Command::new("git").args(["ls-remote", url, "refs/heads/stable"]).output()?;
+        let head = String::from_utf8_lossy(&out.stdout).split_whitespace().next().unwrap_or_default().to_string();
+        anyhow::ensure!(!head.is_empty(), "couldn't look up NyxOS's stable channel");
+        crate::signed::verify(url, &head, signers)?;
+    }
+    let before: Vec<String> = elements.into_iter().flat_map(|e| e.store_paths).collect();
     let mut args = vec!["profile".to_string(), "upgrade".to_string()];
     if names.is_empty() {
         args.push("--all".into());
