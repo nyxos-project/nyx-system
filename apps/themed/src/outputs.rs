@@ -205,19 +205,35 @@ fn wallpapers_manifest() -> PathBuf {
         .unwrap_or_else(|| "/run/current-system/sw/share/backgrounds/nyx/wallpapers.toml".into())
 }
 
-/// The user's own wallpaper, else the theme's default, else none.
-pub fn wallpaper_for(theme_id: &str, appearance: &toml::Table, manifest: &Path) -> Option<PathBuf> {
-    if let Some(own) = appearance.get("wallpaper").and_then(|v| v.as_str()).filter(|s| !s.is_empty()) {
-        let own = own.strip_prefix("~/").map(|rest| home().join(rest)).unwrap_or_else(|| own.into());
-        return Some(own);
+/// Where a wallpaper shows.
+#[derive(Clone, Copy, PartialEq)]
+pub enum Screen {
+    Desktop,
+    Lock,
+}
+
+/// The user's own wallpaper, else the theme's default for that screen, else none. The
+/// lock screen takes `lock-wallpaper`, then the desktop's own choice, then the theme's
+/// `lock`, then its `default`.
+pub fn wallpaper_for(theme_id: &str, screen: Screen, appearance: &toml::Table, manifest: &Path) -> Option<PathBuf> {
+    let own_keys: &[&str] = match screen {
+        Screen::Desktop => &["wallpaper"],
+        Screen::Lock => &["lock-wallpaper", "wallpaper"],
+    };
+    for key in own_keys {
+        if let Some(own) = appearance.get(*key).and_then(|v| v.as_str()).filter(|s| !s.is_empty()) {
+            return Some(own.strip_prefix("~/").map(|rest| home().join(rest)).unwrap_or_else(|| own.into()));
+        }
     }
     let sets: toml::Table = std::fs::read_to_string(manifest).ok()?.parse().ok()?;
-    let default = sets.get(theme_id).or_else(|| sets.get("nyx-dark"))?.get("default")?.as_str()?;
-    Some(manifest.parent()?.join(default))
+    let theme = sets.get(theme_id).or_else(|| sets.get("nyx-dark"))?;
+    let lock = if screen == Screen::Lock { theme.get("lock") } else { None };
+    let path = lock.or_else(|| theme.get("default"))?.as_str()?;
+    Some(manifest.parent()?.join(path))
 }
 
 fn wallpaper(theme: &Theme, appearance: &toml::Table) -> Result<()> {
-    let Some(path) = wallpaper_for(&theme.id, appearance, &wallpapers_manifest()) else { return Ok(()) };
+    let Some(path) = wallpaper_for(&theme.id, Screen::Desktop, appearance, &wallpapers_manifest()) else { return Ok(()) };
     let state = xdg("XDG_STATE_HOME", ".local/state").join("nyx/wallpaper");
     if write_if_changed(&state, &format!("{}\n", path.display()))? {
         quiet(Command::new("systemctl").args(["--user", "try-restart", "nyx-wallpaper.service"]))?;
@@ -237,7 +253,7 @@ fn lock_theme(theme: &Theme, appearance: &toml::Table) -> Theme {
 
 fn hyprlock(theme: &Theme, appearance: &toml::Table) -> Result<()> {
     let lock = lock_theme(theme, appearance);
-    let wallpaper = wallpaper_for(&lock.id, appearance, &wallpapers_manifest());
+    let wallpaper = wallpaper_for(&lock.id, Screen::Lock, appearance, &wallpapers_manifest());
     // hyprlock reads it each time it starts, so nothing has to be told.
     write_if_changed(
         &xdg("XDG_CONFIG_HOME", ".config").join("hypr/nyx-hyprlock.conf"),
@@ -331,11 +347,23 @@ mod tests {
     fn wallpapers() {
         let d = tempfile::tempdir().unwrap();
         let manifest = d.path().join("wallpapers.toml");
-        std::fs::write(&manifest, "[nyx-dark]\ndefault = \"nyx-dark/a.jpg\"\n").unwrap();
+        std::fs::write(
+            &manifest,
+            "[nyx-dark]\ndefault = \"nyx-dark/a.jpg\"\n[nord]\ndefault = \"nord/d.png\"\nlock = \"nord/l.png\"\n",
+        )
+        .unwrap();
         let none = toml::Table::new();
-        assert_eq!(wallpaper_for("nyx-dark", &none, &manifest), Some(d.path().join("nyx-dark/a.jpg")));
-        assert_eq!(wallpaper_for("nord", &none, &manifest), Some(d.path().join("nyx-dark/a.jpg")));
+        let (desk, lock) = (Screen::Desktop, Screen::Lock);
+        assert_eq!(wallpaper_for("nyx-dark", desk, &none, &manifest), Some(d.path().join("nyx-dark/a.jpg")));
+        assert_eq!(wallpaper_for("nyx-dark", lock, &none, &manifest), Some(d.path().join("nyx-dark/a.jpg")));
+        assert_eq!(wallpaper_for("dracula", desk, &none, &manifest), Some(d.path().join("nyx-dark/a.jpg")));
+        assert_eq!(wallpaper_for("nord", desk, &none, &manifest), Some(d.path().join("nord/d.png")));
+        assert_eq!(wallpaper_for("nord", lock, &none, &manifest), Some(d.path().join("nord/l.png")));
         let own: toml::Table = "wallpaper = \"/srv/mine.png\"".parse().unwrap();
-        assert_eq!(wallpaper_for("nord", &own, &manifest), Some(PathBuf::from("/srv/mine.png")));
+        assert_eq!(wallpaper_for("nord", desk, &own, &manifest), Some(PathBuf::from("/srv/mine.png")));
+        assert_eq!(wallpaper_for("nord", lock, &own, &manifest), Some(PathBuf::from("/srv/mine.png")));
+        let both: toml::Table = "wallpaper = \"/srv/mine.png\"\nlock-wallpaper = \"/srv/lock.png\"".parse().unwrap();
+        assert_eq!(wallpaper_for("nord", desk, &both, &manifest), Some(PathBuf::from("/srv/mine.png")));
+        assert_eq!(wallpaper_for("nord", lock, &both, &manifest), Some(PathBuf::from("/srv/lock.png")));
     }
 }

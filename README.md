@@ -95,6 +95,10 @@ desktop theme is the one their Nyx apps follow (`~/.config/nyx/theme.toml`), car
 the rest of the desktop by `nyx-themed`; their lock-screen theme is `appearance.toml`'s
 `lock-theme`.
 
+The wallpapers are `appearance.toml`'s `wallpaper` (desktop) and `lock-wallpaper` (lock
+screen, else the desktop's), else the theme's `default` and `lock` in nyx-wallpapers'
+`wallpapers.toml`: NYXOS on the desktop and N, Y, X stacked on the lock screen.
+
 ## Build
 
 ```sh
