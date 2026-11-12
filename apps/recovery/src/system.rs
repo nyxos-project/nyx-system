@@ -256,6 +256,7 @@ mod tests {
             host: "test".into(),
             passwd: root.join("passwd"),
             shadow: root.join("shadow"),
+            group: root.join("group"),
             mounts: root.join("mnt"),
         };
         (t, p)

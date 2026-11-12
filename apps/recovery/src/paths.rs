@@ -15,6 +15,7 @@ pub struct Paths {
     pub host: String,
     pub passwd: PathBuf,
     pub shadow: PathBuf,
+    pub group: PathBuf,
     /// Where recovery mounts drives.
     pub mounts: PathBuf,
 }
@@ -41,6 +42,7 @@ impl Paths {
             host,
             passwd: "/etc/passwd".into(),
             shadow: "/etc/shadow".into(),
+            group: "/etc/group".into(),
             mounts: "/run/nyx-recovery".into(),
         }
     }

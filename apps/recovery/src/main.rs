@@ -4,14 +4,16 @@
 //! health (disk space, failures, the last boot's errors, making room), accounts (a new
 //! password, unlocking) and restoring files from a Nyx Backup repository.
 //!
-//! The "NyxOS Recovery" boot entry runs it as root on the first console. Nothing switches
-//! the running system: what it changes takes effect at the next start.
+//! The "NyxOS Recovery" boot entry runs it as root on the first console, and it asks for
+//! an administrator's password first. Nothing switches the running system: what it
+//! changes takes effect at the next start.
 
 mod accounts;
 mod health;
 mod paths;
 mod restore;
 mod run;
+mod signin;
 mod system;
 mod ui;
 
@@ -41,7 +43,9 @@ fn main() -> std::process::ExitCode {
         eprintln!("nyx-recovery: run it as root (the NyxOS Recovery boot entry does)");
         return std::process::ExitCode::from(1);
     }
-    match ui::run(paths::Paths::system()) {
+    let paths = paths::Paths::system();
+    signin::require(&paths);
+    match ui::run(paths) {
         Ok(ui::Exit::Quit) => std::process::ExitCode::SUCCESS,
         Ok(ui::Exit::Reboot) => {
             let _ = std::process::Command::new("systemctl").arg("reboot").status();
