@@ -818,11 +818,16 @@ pub fn channel_from_lock(text: &str) -> Option<String> {
     })
 }
 
-/// What a package starts with the session (`share/nyx/autostart`: `UNIT TARGET` lines).
+/// What a package starts with the session: `UNIT TARGET` lines in
+/// `share/nyx/autostart.d/*`, or in `share/nyx/autostart` for packages built before it.
 pub fn session_units(package: &Path) -> Vec<(String, String)> {
-    std::fs::read_to_string(package.join("share/nyx/autostart"))
-        .unwrap_or_default()
-        .lines()
+    let dir = package.join("share/nyx/autostart.d");
+    let mut lists: Vec<_> = std::fs::read_dir(&dir).into_iter().flatten().flatten().map(|e| e.path()).collect();
+    lists.sort();
+    lists.push(package.join("share/nyx/autostart"));
+    lists
+        .iter()
+        .flat_map(|p| std::fs::read_to_string(p).unwrap_or_default().lines().map(str::to_string).collect::<Vec<_>>())
         .filter_map(|l| l.split_once(' ').map(|(u, t)| (u.trim().to_string(), t.trim().to_string())))
         .filter(|(u, t)| !u.is_empty() && !t.is_empty())
         .collect()
@@ -841,8 +846,9 @@ pub enum ProfileChange {
 
 /// After the profile changed: ask the System Manager to trust its Nyx apps (Accounts,
 /// Clipboard and app actions know programs by the folders NyxOS lists), reload the
-/// user's systemd (NyxOS's generator links profile apps' units), then start or restart
-/// the apps' session services. Each step is best effort.
+/// user's systemd (NyxOS's generator links profile apps' units) and session bus (the
+/// apps' D-Bus services), then start or restart the apps' session services. Each step
+/// is best effort.
 pub fn after_profile_change(change: ProfileChange) {
     use std::process::{Command, Stdio};
     let quiet = |program: &str, args: &[&str]| {
@@ -860,6 +866,8 @@ pub fn after_profile_change(change: ProfileChange) {
         ],
     );
     quiet("systemctl", &["--user", "daemon-reload"]);
+    // The session bus reads the profile's D-Bus services only when asked to.
+    quiet("busctl", &["--user", "call", "org.freedesktop.DBus", "/org/freedesktop/DBus", "org.freedesktop.DBus", "ReloadConfig"]);
     if change == ProfileChange::Removed {
         return;
     }
@@ -975,6 +983,23 @@ mod tests {
 
     fn catalog() -> Catalog {
         Catalog::builtin().expect("the built-in catalog is valid")
+    }
+
+    #[test]
+    fn session_units_from_both_layouts() {
+        let pkg = std::env::temp_dir().join(format!("nyx-catalog-units-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&pkg);
+        std::fs::create_dir_all(pkg.join("share/nyx/autostart.d")).unwrap();
+        std::fs::write(pkg.join("share/nyx/autostart.d/nyx-mail"), "nyx-maild graphical-session.target\n").unwrap();
+        std::fs::write(pkg.join("share/nyx/autostart"), "nyx-calendard graphical-session.target\n\nbroken\n").unwrap();
+        let units = session_units(&pkg);
+        std::fs::remove_dir_all(&pkg).unwrap();
+        assert_eq!(
+            units,
+            [("nyx-maild", "graphical-session.target"), ("nyx-calendard", "graphical-session.target")]
+                .map(|(u, t)| (u.to_string(), t.to_string()))
+        );
+        assert!(session_units(Path::new("/nonexistent")).is_empty());
     }
 
     #[test]
