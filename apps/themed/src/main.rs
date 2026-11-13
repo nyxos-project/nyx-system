@@ -11,7 +11,7 @@
 //!   (`~/.config/hypr/nyx-theme.lua`, then `hyprctl reload`), Foot's
 //!   (`~/.config/foot/nyx-theme.ini`), the zsh prompt's (`~/.config/zsh/nyx-theme.zsh`),
 //!   GTK's light or dark preference, the wallpaper
-//!   (the user's own, else the theme's default), the lock screen and the Umbra icons.
+//!   (the user's own, else the theme's default), the lock screen and the Umbra and Vellum icons.
 //!
 //! The choices file is the source of truth, so apps keep working without this
 //! service; it only makes changes arrive at once and in step.

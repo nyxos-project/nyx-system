@@ -281,21 +281,30 @@ pub fn umbra_palette(theme: &Theme) -> String {
     )
 }
 
-/// Umbra redrawn in the theme's colours for this person (`~/.local/share/icons`, ahead
-/// of the system's Nyx Dark copy), when the colours change. Without umbra-icons, nothing.
+/// The icon sets drawn in the theme's colours: (command, the theme folder it builds first).
+const ICON_SETS: [(&str, &str); 2] = [("umbra-icons", "Umbra"), ("vellum-icons", "Vellum")];
+
+/// Umbra and Vellum redrawn in the theme's colours for this person
+/// (`~/.local/share/icons`, ahead of the system's Nyx Dark copies), when the colours
+/// change. A set whose command isn't installed is skipped.
 fn icons(theme: &Theme) -> Result<()> {
     let palette = xdg("XDG_STATE_HOME", ".local/state").join("nyx/umbra-palette.json");
     let out = xdg("XDG_DATA_HOME", ".local/share").join("icons");
     let changed = write_if_changed(&palette, &umbra_palette(theme))?;
-    if !changed && out.join("Umbra/index.theme").exists() {
-        return Ok(());
+    let mut result = Ok(());
+    for (command, folder) in ICON_SETS {
+        if !changed && out.join(folder).join("index.theme").exists() {
+            continue;
+        }
+        let mut cmd = Command::new(command);
+        cmd.args(["build", "--out"]).arg(&out).arg("--palette").arg(&palette);
+        match quiet(&mut cmd) {
+            Err(e) if e.downcast_ref::<std::io::Error>().is_some_and(|e| e.kind() == std::io::ErrorKind::NotFound) => {}
+            Err(e) => result = Err(e),
+            Ok(()) => {}
+        }
     }
-    let mut cmd = Command::new("umbra-icons");
-    cmd.args(["build", "--out"]).arg(&out).arg("--palette").arg(&palette);
-    match quiet(&mut cmd) {
-        Err(e) if e.downcast_ref::<std::io::Error>().is_some_and(|e| e.kind() == std::io::ErrorKind::NotFound) => Ok(()),
-        other => other,
-    }
+    result
 }
 
 pub fn write_all(theme: &Theme, appearance: &toml::Table) -> Vec<(&'static str, Result<()>)> {
