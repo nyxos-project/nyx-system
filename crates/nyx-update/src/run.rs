@@ -246,12 +246,12 @@ fn profile(names: &[String], line: &mut dyn FnMut(&str)) -> Result<(String, Vec<
     // Apps from NyxOS's stable channel update only to a signed release.
     let signers = std::path::Path::new(crate::signed::SIGNERS);
     let stable = elements.iter().any(|e| e.url.starts_with("github:nyxos-project/nyxos/stable") && (names.is_empty() || names.contains(&e.name)));
-    if stable && signers.is_file() {
-        let url = "https://github.com/nyxos-project/nyxos";
-        let out = std::process::Command::new("git").args(["ls-remote", url, "refs/heads/stable"]).output()?;
-        let head = String::from_utf8_lossy(&out.stdout).split_whitespace().next().unwrap_or_default().to_string();
-        anyhow::ensure!(!head.is_empty(), "couldn't look up NyxOS's stable channel");
-        crate::signed::verify(url, &head, signers)?;
+    let url = "https://github.com/nyxos-project/nyxos";
+    let checked = stable && signers.is_file();
+    if checked {
+        let head = crate::signed::head(url, "refs/heads/stable")?;
+        let tag = crate::signed::verify(url, &head, signers)?;
+        crate::signed::not_older(crate::signed::release_number(&tag).unwrap_or(0), crate::signed::newest())?;
     }
     let before: Vec<String> = elements.into_iter().flat_map(|e| e.store_paths).collect();
     let mut args = vec!["profile".to_string(), "upgrade".to_string()];
@@ -261,6 +261,28 @@ fn profile(names: &[String], line: &mut dyn FnMut(&str)) -> Result<(String, Vec<
         args.extend(names.iter().cloned());
     }
     stream("nix", &args, line)?;
+    // nix resolved the branch again by itself: what it installed must be a checked release
+    // too (the branch can move in between), else the update is undone.
+    if checked {
+        let mut newest = None;
+        for rev in stable_revs() {
+            let ok = crate::signed::verify(url, &rev, signers).and_then(|tag| {
+                let n = crate::signed::release_number(&tag).unwrap_or(0);
+                crate::signed::not_older(n, crate::signed::newest())?;
+                Ok(n)
+            });
+            match ok {
+                Ok(n) => newest = newest.max(Some(n)),
+                Err(e) => {
+                    let _ = stream("nix", &["profile".into(), "rollback".into()], line);
+                    return Err(e.context("the update was undone"));
+                }
+            }
+        }
+        if let Some(n) = newest {
+            crate::signed::remember(n);
+        }
+    }
     let after: Vec<String> = nyx_catalog::profile().into_iter().flat_map(|e| e.store_paths).collect();
     let replaced: Vec<String> = before.into_iter().filter(|p| !after.contains(p)).collect();
     if !replaced.is_empty() {
@@ -269,6 +291,24 @@ fn profile(names: &[String], line: &mut dyn FnMut(&str)) -> Result<(String, Vec<
     let message =
         if names.is_empty() { "Your Nix profile is up to date".into() } else { format!("Updated {}", names.join(", ")) };
     Ok((message, running_from(&replaced)))
+}
+
+/// The revisions of NyxOS the profile's stable-channel elements are locked to.
+fn stable_revs() -> Vec<String> {
+    let Ok(out) = std::process::Command::new("nix").args(["profile", "list", "--json"]).output() else {
+        return Vec::new();
+    };
+    let list: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap_or_default();
+    let mut revs: Vec<String> = list["elements"]
+        .as_object()
+        .into_iter()
+        .flat_map(|m| m.values())
+        .filter(|e| e["originalUrl"].as_str().is_some_and(|u| u.starts_with("github:nyxos-project/nyxos/stable")))
+        .filter_map(|e| crate::signed::locked_rev(e["url"].as_str()?).map(String::from))
+        .collect();
+    revs.sort();
+    revs.dedup();
+    revs
 }
 
 /// The person's programs whose executable is in one of `paths` (replaced, so they run

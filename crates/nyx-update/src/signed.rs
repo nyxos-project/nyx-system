@@ -101,8 +101,72 @@ pub fn verify(url: &str, rev: &str, signers: &Path) -> Result<String> {
     bail!("NyxOS {short} isn't signed by a NyxOS release key, so it isn't installed")
 }
 
+/// The revision a locked NyxOS URL names (`github:nyxos-project/nyxos/<rev>?narHash=…`).
+pub fn locked_rev(url: &str) -> Option<&str> {
+    let rest = url.strip_prefix("github:nyxos-project/nyxos/")?;
+    let rev = rest.split(['?', '#']).next()?;
+    (rev.len() == 40 && rev.bytes().all(|b| b.is_ascii_hexdigit())).then_some(rev)
+}
+
+/// The release number of a `known-good/N` tag.
+pub fn release_number(tag: &str) -> Option<u64> {
+    tag.strip_prefix("known-good/")?.parse().ok()
+}
+
+/// Refuse a release older than the newest one installed before (a channel moved back to
+/// an older signed release, with holes fixed since).
+pub fn not_older(release: u64, newest: Option<u64>) -> Result<()> {
+    if let Some(n) = newest {
+        ensure!(release >= n, "NyxOS's channel offers release {release}, older than release {n} installed before, so it isn't installed");
+    }
+    Ok(())
+}
+
+/// Where the newest release installed into the person's profile is remembered.
+pub fn newest_file() -> std::path::PathBuf {
+    let state = std::env::var_os("XDG_STATE_HOME")
+        .map(std::path::PathBuf::from)
+        .unwrap_or_else(|| std::path::PathBuf::from(std::env::var_os("HOME").unwrap_or_default()).join(".local/state"));
+    state.join("nyx/profile-release")
+}
+
+pub fn newest() -> Option<u64> {
+    std::fs::read_to_string(newest_file()).ok()?.trim().parse().ok()
+}
+
+pub fn remember(release: u64) {
+    if newest().is_some_and(|n| n >= release) {
+        return;
+    }
+    let path = newest_file();
+    if let Some(dir) = path.parent() {
+        let _ = std::fs::create_dir_all(dir);
+    }
+    let _ = std::fs::write(path, format!("{release}\n"));
+}
+
+/// `git ls-remote URL REF`'s revision.
+pub fn head(url: &str, reference: &str) -> Result<String> {
+    let out = git(&["ls-remote", url, reference])?;
+    ensure!(out.status.success(), "couldn't look up NyxOS's channel: {}", String::from_utf8_lossy(&out.stderr).trim());
+    let head = String::from_utf8_lossy(&out.stdout).split_whitespace().next().unwrap_or_default().to_string();
+    ensure!(!head.is_empty(), "couldn't look up NyxOS's stable channel");
+    Ok(head)
+}
+
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn locked_revisions_and_release_order() {
+        let rev = "0123456789abcdef0123456789abcdef01234567";
+        assert_eq!(locked_rev(&format!("github:nyxos-project/nyxos/{rev}?narHash=sha256-x")), Some(rev));
+        assert_eq!(locked_rev("github:nyxos-project/nyxos/stable"), None);
+        assert_eq!(locked_rev(&format!("github:someone/nyxos/{rev}")), None);
+        assert_eq!(release_number("known-good/24"), Some(24));
+        assert!(not_older(24, Some(24)).is_ok() && not_older(25, None).is_ok());
+        assert!(not_older(23, Some(24)).is_err());
+    }
+
     use super::*;
 
     #[test]
