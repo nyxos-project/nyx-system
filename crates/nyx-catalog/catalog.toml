@@ -381,11 +381,11 @@ nyx = ["home"]
 [[item]]
 id = "nyx-containers"
 name = "Nyx Containers"
-summary = "Manage Incus and Docker containers and virtual machines."
+summary = "Manage Incus, Docker and Podman containers and virtual machines."
 category = "nyx-tools"
 tier = "welcome"
 nyx = ["containers"]
-note = "Works with Incus or Docker; add one under Containers and infrastructure."
+note = "Works with Incus, Docker or Podman; add one under Containers and infrastructure."
 
 [[item]]
 id = "nyx-git"
