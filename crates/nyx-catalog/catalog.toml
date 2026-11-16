@@ -282,20 +282,20 @@ nyx = ["share"]
 [[item]]
 id = "nyx-mail"
 name = "Nyx Mail"
-summary = "Email, with your online accounts."
+summary = "Email from Gmail, iCloud, Fastmail and any IMAP account."
 category = "nyx-communication"
 tier = "welcome"
 nyx = ["mail"]
-note = "Google and Microsoft accounts need an OAuth client of your own for now (Settings › Accounts)."
+note = "Accounts use an app password (Settings › Accounts). Microsoft accounts, and Google's own sign-in, need an OAuth client of your own."
 
 [[item]]
 id = "nyx-calendar"
 name = "Nyx Calendar"
-summary = "Calendars, synced with your online accounts."
+summary = "Calendars on this computer and from iCloud, Fastmail, Nextcloud and other CalDAV servers."
 category = "nyx-productivity"
 tier = "welcome"
 nyx = ["calendar"]
-note = "Google and Microsoft accounts need an OAuth client of your own for now (Settings › Accounts)."
+note = "Google and Microsoft calendars need an OAuth client of your own (Settings › Accounts)."
 
 [[item]]
 id = "nyx-contacts"
@@ -304,6 +304,7 @@ summary = "Your address book."
 category = "nyx-communication"
 tier = "welcome"
 nyx = ["contacts"]
+note = "Address books from CardDAV accounts (Settings › Accounts) show alongside, read-only."
 
 [[item]]
 id = "nyx-notes"
@@ -352,12 +353,13 @@ summary = "YouTube Music, with your library and playlists."
 category = "nyx-media"
 tier = "welcome"
 nyx = ["lyra"]
+note = "Unofficial: plays through YouTube Music's web player, which Google can change."
 aliases = ["youtube-music", "ytmusic"]
 
 [[item]]
 id = "nyx-media-player"
 name = "Nyx Media Player"
-summary = "Play videos and music files."
+summary = "Play your videos: movies, shows and files."
 category = "nyx-media"
 tier = "welcome"
 nyx = ["media-player"]
@@ -449,10 +451,11 @@ nyx = ["maps"]
 [[item]]
 id = "nyx-reminders"
 name = "Nyx Reminders"
-summary = "Reminders and to-do lists, synced."
+summary = "Reminders and to-do lists."
 category = "nyx-productivity"
 tier = "store"
 nyx = ["reminders"]
+note = "Syncing lists with online accounts is a preview."
 
 [[item]]
 id = "nyx-clipboard"
@@ -467,10 +470,18 @@ nyx = ["clipboard"]
 [[item]]
 id = "nyx-transfer"
 name = "Nyx Transfer"
-summary = "Send files between your devices."
+summary = "Copy files to and from servers (SFTP, FTP, WebDAV)."
 category = "nyx-tools"
 tier = "store"
 nyx = ["transfer"]
+
+[[item]]
+id = "nyx-fonts"
+name = "Nyx Fonts"
+summary = "Find and install Google Fonts and Nerd Fonts."
+category = "nyx-tools"
+tier = "store"
+nyx = ["fonts"]
 
 [[item]]
 id = "nyx-cloud"
@@ -479,6 +490,7 @@ summary = "Your cloud storage in Files."
 category = "nyx-tools"
 tier = "store"
 nyx = ["cloud"]
+note = "Set up in Settings › Cloud Storage."
 
 # ----- Apps -----
 
