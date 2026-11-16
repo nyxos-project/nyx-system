@@ -197,7 +197,10 @@ impl Consent {
         match self {
             Consent::License { item } => format!("{item} has a license that isn't free; installing it accepts that license"),
             Consent::Service { what, .. } => format!("Turns on a system service: {what}"),
-            Consent::Group { group, what } => format!("Adds you to the {group} group: {what}"),
+            Consent::Group { group, what } => match nyx_system_proto::group_risk(group) {
+                Some(risk) => format!("Adds you to the {group} group: {what}. {risk}"),
+                None => format!("Adds you to the {group} group: {what}"),
+            },
         }
     }
 }
@@ -708,6 +711,9 @@ pub fn flatpak(apps: &[String], install: bool, mut line: impl FnMut(&str)) -> Re
             line(l);
         }
         let status = child.wait()?;
+        if !status.success() && errors.iter().any(|l| nyx_system_proto::offline_error(l)) {
+            bail!("Flathub: {}", nyx_system_proto::OFFLINE);
+        }
         ensure!(status.success(), "flatpak {} failed: {}", args[0], errors.last().cloned().unwrap_or_default());
     }
     Ok(())
@@ -979,15 +985,21 @@ pub fn nix_profile(refs: &[String], install: bool, mut line: impl FnMut(&str)) -
             .spawn()
             .context("nix profile")?;
         let mut last = String::new();
+        let mut offline = false;
         if let Some(err) = child.stderr.take() {
             for l in BufReader::new(err).lines().map_while(Result::ok) {
                 if l.trim_start().starts_with("error:") {
                     last = l.trim().to_string();
                 }
+                offline |= nyx_system_proto::offline_error(&l);
                 line(&l);
             }
         }
-        ensure!(child.wait()?.success(), "nix profile {} failed: {last}", args[0]);
+        let ok = child.wait()?.success();
+        if !ok && offline {
+            bail!("{}", nyx_system_proto::OFFLINE);
+        }
+        ensure!(ok, "nix profile {} failed: {last}", args[0]);
     }
     if changed {
         after_profile_change(if install { ProfileChange::Added } else { ProfileChange::Removed });
@@ -1107,7 +1119,8 @@ mod tests {
             assert!(plan.profiles.contains(&format!("github:nyxos-project/nyxos/testing#{attr}")), "{attr}: {:?}", plan.profiles);
         }
         assert_eq!(plan.flatpaks, vec!["com.valvesoftware.Steam".to_string()]);
-        assert!(plan.consent.iter().any(|c| matches!(c, Consent::Group { group, .. } if group == "docker")));
+        let docker = plan.consent.iter().find(|c| matches!(c, Consent::Group { group, .. } if group == "docker")).unwrap();
+        assert!(docker.describe().contains("administrator rights"), "{}", docker.describe());
         assert_eq!(plan.consent.iter().filter(|c| matches!(c, Consent::License { .. })).count(), 2);
         for ch in &plan.changes {
             ch.validate().unwrap();

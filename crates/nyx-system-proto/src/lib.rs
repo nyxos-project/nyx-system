@@ -150,12 +150,41 @@ pub const SERVICES: &[(&str, &str)] = &[
 
 /// Groups the manager may add users to, with what membership allows.
 pub const GROUPS: &[(&str, &str)] = &[
-    ("docker", "Run Docker containers (as good as root on this computer)"),
+    ("docker", "Run Docker containers"),
     ("libvirtd", "Manage system virtual machines"),
     ("incus-admin", "Manage Incus containers and virtual machines"),
     ("kvm", "Use hardware virtualization directly"),
     ("dialout", "Use serial ports"),
 ];
+
+/// What a download failing for want of a network says, everywhere the same.
+pub const OFFLINE: &str = "There's no network connection. Connect to the internet and try again.";
+
+/// Whether a line of Nix's, curl's, Flatpak's or an HTTP client's output says the
+/// network can't be reached (no DNS, no route), rather than that something is wrong.
+pub fn offline_error(line: &str) -> bool {
+    let l = line.to_ascii_lowercase();
+    [
+        "could not resolve host",
+        "couldn't resolve host",
+        "could not resolve hostname",
+        "temporary failure in name resolution",
+        "name or service not known",
+        "network is unreachable",
+        "no route to host",
+        "dns error",
+        "failed to lookup address",
+    ]
+    .iter()
+    .any(|s| l.contains(s))
+}
+
+/// What membership of a [`GROUPS`] group amounts to, when it's more than its name says:
+/// these let any program you run take over the computer.
+pub fn group_risk(group: &str) -> Option<&'static str> {
+    matches!(group, "docker" | "incus-admin" | "libvirtd")
+        .then_some("This is the same as administrator rights: any program you run can then take full control of this computer.")
+}
 
 /// What logind does for each lid and button event (`[Login]` keys), and the actions
 /// it takes.
@@ -1145,6 +1174,18 @@ mod tests {
         assert!(png("iVBORw0KGgoAAAANSUhEUg==").validate().is_ok());
         assert!(png("R0lGODlh").validate().is_err(), "a GIF isn't a PNG");
         assert!(png("iVBORw0KGgo$$$").validate().is_err());
+    }
+
+    #[test]
+    fn offline_errors_are_recognised() {
+        assert!(offline_error(
+            "error: unable to download 'https://api.github.com/repos/x': Could not resolve hostname (6) Could not resolve host: api.github.com"
+        ));
+        assert!(offline_error("Can't load uri https://dl.flathub.org/repo/summary.idx: Could not resolve hostname"));
+        assert!(offline_error(
+            "error sending request for url (https://huggingface.co/x): client error (Connect): dns error: failed to lookup address information"
+        ));
+        assert!(!offline_error("error: attribute 'firefoxx' missing"));
     }
 
     #[test]

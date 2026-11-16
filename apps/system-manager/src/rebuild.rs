@@ -40,6 +40,7 @@ pub async fn run(emitter: &SignalEmitter<'_>, cwd: &Path, program: &str, args: &
     // The first "error:" line says why; otherwise the last line does.
     let mut last = String::new();
     let mut error = String::new();
+    let mut offline = false;
     let (mut out_done, mut err_done) = (false, false);
     while !(out_done && err_done) {
         tokio::select! {
@@ -50,6 +51,7 @@ pub async fn run(emitter: &SignalEmitter<'_>, cwd: &Path, program: &str, args: &
             line = err.next_line(), if !err_done => match line? {
                 Some(l) => {
                     let t = l.trim();
+                    offline |= nyx_system_proto::offline_error(t);
                     if error.is_empty() && t.starts_with("error:") {
                         error = t.trim_start_matches("error:").trim().to_string();
                     }
@@ -62,6 +64,9 @@ pub async fn run(emitter: &SignalEmitter<'_>, cwd: &Path, program: &str, args: &
     }
     let status = child.wait().await?;
     if !status.success() {
+        if offline {
+            bail!("{}", nyx_system_proto::OFFLINE);
+        }
         let why = [error, last].into_iter().find(|s| !s.is_empty()).unwrap_or_else(|| status.to_string());
         if program.ends_with("nixos-rebuild") {
             bail!("The new system couldn't be built: {why}");

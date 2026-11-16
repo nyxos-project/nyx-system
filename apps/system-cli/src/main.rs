@@ -550,7 +550,7 @@ async fn run(args: &[&str]) -> Result<()> {
         ["generations"] => {
             let list: Vec<Generation> = serde_json::from_str(&proxy().await?.generations().await?)?;
             for g in list {
-                println!("{}{:>5}  {}  {}", if g.current { "*" } else { " " }, g.number, g.created, g.version);
+                println!("{}{:>5}  {}  {}", if g.current { "*" } else { " " }, g.number, local_time(g.created), g.version);
             }
         }
         ["catalog", rest @ ..] => catalog(rest).await?,
@@ -601,5 +601,23 @@ mod tests {
         assert_eq!(super::value("12"), toml::Value::Integer(12));
         assert_eq!(super::value("nord"), toml::Value::String("nord".into()));
         assert_eq!(super::value("\"a b\""), toml::Value::String("a b".into()));
+    }
+}
+
+/// Seconds since the epoch as the local date and time, `2026-11-16 14:05`.
+fn local_time(secs: i64) -> String {
+    let t = secs as libc::time_t;
+    // SAFETY: localtime_r and strftime write only into the buffers given.
+    unsafe {
+        let mut tm: libc::tm = std::mem::zeroed();
+        if libc::localtime_r(&t, &mut tm).is_null() {
+            return secs.to_string();
+        }
+        let mut buf = [0u8; 32];
+        let n = libc::strftime(buf.as_mut_ptr().cast(), buf.len(), c"%Y-%m-%d %H:%M".as_ptr(), &tm);
+        if n == 0 {
+            return secs.to_string();
+        }
+        String::from_utf8_lossy(&buf[..n]).into_owned()
     }
 }
