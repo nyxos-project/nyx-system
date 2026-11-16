@@ -868,6 +868,18 @@ pub fn after_profile_change(change: ProfileChange) {
     quiet("systemctl", &["--user", "daemon-reload"]);
     // The session bus reads the profile's D-Bus services only when asked to.
     quiet("busctl", &["--user", "call", "org.freedesktop.DBus", "/org/freedesktop/DBus", "org.freedesktop.DBus", "ReloadConfig"]);
+    // Browsers find a profile app's native-messaging host (Passwords' bridge) only in their
+    // own folders.
+    let home = std::env::var("HOME").unwrap_or_default();
+    if !home.is_empty() {
+        let state = std::env::var("XDG_STATE_HOME").unwrap_or_else(|_| format!("{home}/.local/state"));
+        for profile in [format!("{home}/.nix-profile"), format!("{state}/nix/profile")] {
+            if Path::new(&profile).exists() {
+                link_native_hosts(Path::new(&profile), Path::new(&home));
+                break;
+            }
+        }
+    }
     if change == ProfileChange::Removed {
         return;
     }
@@ -887,6 +899,45 @@ pub fn after_profile_change(change: ProfileChange) {
             ProfileChange::Added if active => quiet("systemctl", &["--user", "start", "--no-block", &unit]),
             ProfileChange::Upgraded => quiet("systemctl", &["--user", "try-restart", "--no-block", &unit]),
             _ => {}
+        }
+    }
+}
+
+/// Where browsers look for a user's native-messaging manifests, by where packages put them.
+const NATIVE_HOSTS: &[(&str, &str)] = &[
+    ("lib/mozilla/native-messaging-hosts", ".mozilla/native-messaging-hosts"),
+    ("etc/chromium/native-messaging-hosts", ".config/chromium/NativeMessagingHosts"),
+];
+
+/// Link every native-messaging manifest in the Nix profile at `profile` into `home`'s
+/// browser folders, through the profile's path so upgrades follow by themselves, and take
+/// away links into the profile whose manifest is gone. Other files are left alone.
+pub fn link_native_hosts(profile: &Path, home: &Path) {
+    for (from, to) in NATIVE_HOSTS {
+        let (src, dst) = (profile.join(from), home.join(to));
+        if let Ok(entries) = std::fs::read_dir(&dst) {
+            for e in entries.flatten() {
+                let link = e.path();
+                if let Ok(target) = std::fs::read_link(&link)
+                    && target.starts_with(&src)
+                    && !target.exists()
+                {
+                    let _ = std::fs::remove_file(&link);
+                }
+            }
+        }
+        let Ok(entries) = std::fs::read_dir(&src) else { continue };
+        for e in entries.flatten() {
+            let name = e.file_name();
+            if !name.to_string_lossy().ends_with(".json") {
+                continue;
+            }
+            let (target, link) = (src.join(&name), dst.join(&name));
+            if std::fs::symlink_metadata(&link).is_ok() {
+                continue;
+            }
+            let _ = std::fs::create_dir_all(&dst);
+            let _ = std::os::unix::fs::symlink(&target, &link);
         }
     }
 }
@@ -983,6 +1034,31 @@ mod tests {
 
     fn catalog() -> Catalog {
         Catalog::builtin().expect("the built-in catalog is valid")
+    }
+
+    #[test]
+    fn native_hosts_are_linked_and_dangling_ones_dropped() {
+        let root = std::env::temp_dir().join(format!("nyx-catalog-hosts-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        let (profile, home) = (root.join("profile"), root.join("home"));
+        let moz = profile.join("lib/mozilla/native-messaging-hosts");
+        std::fs::create_dir_all(&moz).unwrap();
+        std::fs::create_dir_all(profile.join("etc/chromium/native-messaging-hosts")).unwrap();
+        std::fs::write(moz.join("io.github.design_nexus.nyx.passwords.json"), "{}").unwrap();
+        std::fs::write(profile.join("etc/chromium/native-messaging-hosts/p.json"), "{}").unwrap();
+        // Someone's own manifest stays as it is.
+        std::fs::create_dir_all(home.join(".mozilla/native-messaging-hosts")).unwrap();
+        std::fs::write(home.join(".mozilla/native-messaging-hosts/mine.json"), "{}").unwrap();
+        link_native_hosts(&profile, &home);
+        let link = home.join(".mozilla/native-messaging-hosts/io.github.design_nexus.nyx.passwords.json");
+        assert_eq!(std::fs::read_link(&link).unwrap(), moz.join("io.github.design_nexus.nyx.passwords.json"));
+        assert!(home.join(".config/chromium/NativeMessagingHosts/p.json").exists());
+        // The app leaves the profile: its link goes, the other file stays.
+        std::fs::remove_file(moz.join("io.github.design_nexus.nyx.passwords.json")).unwrap();
+        link_native_hosts(&profile, &home);
+        assert!(std::fs::symlink_metadata(&link).is_err());
+        assert!(home.join(".mozilla/native-messaging-hosts/mine.json").exists());
+        std::fs::remove_dir_all(&root).unwrap();
     }
 
     #[test]
