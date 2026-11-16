@@ -19,11 +19,8 @@ impl Store {
     pub fn watch(&self, on_change: impl Fn() + Send + 'static) -> Result<Watch> {
         let _ = std::fs::create_dir_all(&self.layers.user);
         let file: OsString = format!("{}.toml", self.domain.name).into();
-        let dirs: Vec<PathBuf> = [&self.layers.defaults, &self.layers.system, &self.layers.user]
-            .into_iter()
-            .filter(|d| d.is_dir())
-            .cloned()
-            .collect();
+        let dirs: Vec<PathBuf> =
+            [&self.layers.defaults, &self.layers.system, &self.layers.user].into_iter().filter(|d| d.is_dir()).cloned().collect();
         // /etc/nyxos/defaults/* point through /etc/static, which a switch replaces.
         let etc_static = self.layers.defaults.starts_with("/etc").then(|| PathBuf::from("/etc"));
         let relevant = move |p: &Path| {

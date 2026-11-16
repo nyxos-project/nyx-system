@@ -326,6 +326,82 @@ pub struct SystemSettings {
     /// The system logo, in place of the Nyx mark (`/etc/nyx/logo.svg|png`).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub logo: Option<Logo>,
+    /// Face, fingerprint and security-key sign-in (`nyx.biometrics`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub biometrics: Option<Biometrics>,
+}
+
+/// Where each sign-in method is tried before the password ([`BIOMETRIC_SURFACES`]).
+pub const BIOMETRIC_SURFACES: &[&str] = &["login", "sudo", "polkit", "lock"];
+pub const BIOMETRIC_METHODS: &[&str] = &["face", "fingerprint", "security-key"];
+pub const FACE_BACKENDS: &[&str] = &["none", "irlume", "gaze"];
+
+/// Nyx Biometrics as the NixOS module takes it (`nyx.biometrics`).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct Biometrics {
+    pub enable: bool,
+    /// [`FACE_BACKENDS`]: Irlume for infrared cameras, Gaze for webcams.
+    #[serde(default = "no_face")]
+    pub face: String,
+    /// Gaze on the lock screen (a photo can pass).
+    #[serde(default)]
+    pub allow_webcam_face: bool,
+    #[serde(default)]
+    pub fingerprint: bool,
+    #[serde(default)]
+    pub security_key: bool,
+    /// A surface's methods, in the order they're tried.
+    #[serde(default)]
+    pub surfaces: BTreeMap<String, Vec<String>>,
+}
+
+fn no_face() -> String {
+    "none".into()
+}
+
+impl Default for Biometrics {
+    fn default() -> Self {
+        Biometrics {
+            enable: false,
+            face: no_face(),
+            allow_webcam_face: false,
+            fingerprint: false,
+            security_key: false,
+            surfaces: BTreeMap::new(),
+        }
+    }
+}
+
+impl Biometrics {
+    /// What the NixOS module would refuse, said plainly.
+    pub fn validate(&self) -> Result<()> {
+        ensure!(FACE_BACKENDS.contains(&self.face.as_str()), "not a face sign-in NyxOS has: {}", self.face);
+        for (surface, methods) in &self.surfaces {
+            ensure!(BIOMETRIC_SURFACES.contains(&surface.as_str()), "not a place to sign in: {surface}");
+            let mut seen = BTreeSet::new();
+            for m in methods {
+                ensure!(BIOMETRIC_METHODS.contains(&m.as_str()), "not a sign-in method: {m}");
+                ensure!(seen.insert(m), "{m} is listed twice for {surface}");
+                match m.as_str() {
+                    "face" => {
+                        ensure!(self.face != "none", "face sign-in isn't turned on");
+                        ensure!(
+                            self.face != "gaze" || (surface == "lock" && self.allow_webcam_face),
+                            "a webcam can only unlock the lock screen, and only when that's allowed"
+                        );
+                    }
+                    "fingerprint" => ensure!(self.fingerprint, "fingerprint sign-in isn't turned on"),
+                    _ => ensure!(self.security_key, "security-key sign-in isn't turned on"),
+                }
+            }
+        }
+        ensure!(
+            self.enable || (self.face == "none" && !self.fingerprint && !self.security_key && self.surfaces.is_empty()),
+            "sign-in methods need Nyx Biometrics turned on"
+        );
+        Ok(())
+    }
 }
 
 /// A logo image. An SVG's `currentColor` parts take the theme's logo colour; a PNG is
@@ -416,6 +492,7 @@ impl Default for SystemSettings {
             mounts: BTreeMap::new(),
             hardware: hardware::Hardware::default(),
             logo: None,
+            biometrics: None,
         }
     }
 }
@@ -540,6 +617,10 @@ pub enum Change {
     NvidiaDriver {
         proprietary: bool,
     },
+    /// Nyx Biometrics' settings, all together (`None` gives them back to the configuration).
+    Biometrics {
+        value: Option<Biometrics>,
+    },
 }
 
 impl Change {
@@ -646,6 +727,7 @@ impl Change {
                 Ok(())
             }
             Change::NvidiaDriver { .. } => Ok(()),
+            Change::Biometrics { value } => value.as_ref().map_or(Ok(()), Biometrics::validate),
         }
     }
 }
@@ -755,6 +837,7 @@ impl SystemSettings {
                     ensure!(!*proprietary || s.hardware.has_gpu("nvidia"), "this computer has no NVIDIA graphics");
                     s.hardware.nvidia_proprietary = *proprietary;
                 }
+                Change::Biometrics { value } => s.biometrics = value.clone(),
             }
         }
         Ok(s)
@@ -1062,6 +1145,38 @@ mod tests {
         assert!(png("iVBORw0KGgoAAAANSUhEUg==").validate().is_ok());
         assert!(png("R0lGODlh").validate().is_err(), "a GIF isn't a PNG");
         assert!(png("iVBORw0KGgo$$$").validate().is_err());
+    }
+
+    #[test]
+    fn biometrics_are_checked_like_the_module() {
+        let mut b = Biometrics { enable: true, fingerprint: true, ..Biometrics::default() };
+        b.surfaces.insert("sudo".into(), vec!["fingerprint".into()]);
+        let s = SystemSettings::default().with(&[Change::Biometrics { value: Some(b.clone()) }]).unwrap();
+        assert!(serde_json::to_string(&s).unwrap().contains("\"biometrics\":{\"enable\":true,\"face\":\"none\""));
+        assert_eq!(s.with(&[Change::Biometrics { value: None }]).unwrap().biometrics, None);
+        let bad = |f: &dyn Fn(&mut Biometrics)| {
+            let mut x = b.clone();
+            f(&mut x);
+            Change::Biometrics { value: Some(x) }.validate().is_err()
+        };
+        assert!(bad(&|x| x.fingerprint = false), "a method that isn't on");
+        assert!(bad(&|x| x.enable = false), "methods without the broker");
+        assert!(bad(&|x| x.face = "howdy".into()));
+        assert!(bad(&|x| {
+            x.surfaces.insert("ssh".into(), vec![]);
+        }));
+        assert!(bad(&|x| {
+            x.surfaces.insert("sudo".into(), vec!["fingerprint".into(), "fingerprint".into()]);
+        }));
+        // A webcam only unlocks the lock screen, and only when allowed.
+        let gaze = |surface: &str, allow: bool| {
+            let mut x = Biometrics { enable: true, face: "gaze".into(), allow_webcam_face: allow, ..Biometrics::default() };
+            x.surfaces.insert(surface.into(), vec!["face".into()]);
+            x.validate().is_ok()
+        };
+        assert!(gaze("lock", true));
+        assert!(!gaze("lock", false));
+        assert!(!gaze("sudo", true));
     }
 
     #[test]

@@ -90,9 +90,10 @@ pub fn verify(url: &str, rev: &str, signers: &Path) -> Result<String> {
         if !git(&["-C", at, "fetch", "-q", "--depth=1", "--no-tags", url, &spec])?.status.success() {
             continue;
         }
-        let good = git(&["-C", at, "-c", "gpg.format=ssh", "-c", &format!("gpg.ssh.allowedSignersFile={signers}"), "verify-tag", tag])?
-            .status
-            .success();
+        let good =
+            git(&["-C", at, "-c", "gpg.format=ssh", "-c", &format!("gpg.ssh.allowedSignersFile={signers}"), "verify-tag", tag])?
+                .status
+                .success();
         let commit = git(&["-C", at, "rev-parse", &format!("{tag}^{{commit}}")])?;
         if good && String::from_utf8_lossy(&commit.stdout).trim() == rev {
             return Ok(tag.clone());
@@ -117,7 +118,10 @@ pub fn release_number(tag: &str) -> Option<u64> {
 /// an older signed release, with holes fixed since).
 pub fn not_older(release: u64, newest: Option<u64>) -> Result<()> {
     if let Some(n) = newest {
-        ensure!(release >= n, "NyxOS's channel offers release {release}, older than release {n} installed before, so it isn't installed");
+        ensure!(
+            release >= n,
+            "NyxOS's channel offers release {release}, older than release {n} installed before, so it isn't installed"
+        );
     }
     Ok(())
 }
@@ -203,7 +207,9 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let d = |p: &str| dir.path().join(p).display().to_string();
         let keygen = |name: &str| {
-            assert!(Command::new("ssh-keygen").args(["-q", "-t", "ed25519", "-N", "", "-f", &d(name)]).status().unwrap().success());
+            assert!(
+                Command::new("ssh-keygen").args(["-q", "-t", "ed25519", "-N", "", "-f", &d(name)]).status().unwrap().success()
+            );
             std::fs::read_to_string(d(&format!("{name}.pub"))).unwrap()
         };
         let (good, other) = (keygen("good"), keygen("other"));

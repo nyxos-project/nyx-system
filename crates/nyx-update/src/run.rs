@@ -245,7 +245,9 @@ fn profile(names: &[String], line: &mut dyn FnMut(&str)) -> Result<(String, Vec<
     let elements = nyx_catalog::profile();
     // Apps from NyxOS's stable channel update only to a signed release.
     let signers = std::path::Path::new(crate::signed::SIGNERS);
-    let stable = elements.iter().any(|e| e.url.starts_with("github:nyxos-project/nyxos/stable") && (names.is_empty() || names.contains(&e.name)));
+    let stable = elements
+        .iter()
+        .any(|e| e.url.starts_with("github:nyxos-project/nyxos/stable") && (names.is_empty() || names.contains(&e.name)));
     let url = "https://github.com/nyxos-project/nyxos";
     let checked = stable && signers.is_file();
     if checked {

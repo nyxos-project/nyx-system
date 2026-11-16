@@ -159,7 +159,13 @@ async fn may_read(conn: &Connection, header: &Header<'_>) -> fdo::Result<()> {
     let sender = header.sender().ok_or_else(|| fdo::Error::AccessDenied("no sender".into()))?.to_string();
     let dbus = fdo::DBusProxy::new(conn).await?;
     let uid = dbus.get_connection_unix_user(zbus::names::BusName::try_from(sender.as_str()).map_err(failed)?).await?;
-    if uid == 0 || administrator(uid, &std::fs::read_to_string("/etc/passwd").unwrap_or_default(), &std::fs::read_to_string("/etc/group").unwrap_or_default()) {
+    if uid == 0
+        || administrator(
+            uid,
+            &std::fs::read_to_string("/etc/passwd").unwrap_or_default(),
+            &std::fs::read_to_string("/etc/group").unwrap_or_default(),
+        )
+    {
         return Ok(());
     }
     if check(conn, &sender, action::READ, false).await?.0 {
@@ -448,14 +454,23 @@ impl Manager {
         serde_json::to_string(&result.map_err(failed)?).map_err(failed)
     }
 
-    async fn history(&self, #[zbus(header)] header: Header<'_>, #[zbus(connection)] conn: &Connection, limit: u32) -> fdo::Result<String> {
+    async fn history(
+        &self,
+        #[zbus(header)] header: Header<'_>,
+        #[zbus(connection)] conn: &Connection,
+        limit: u32,
+    ) -> fdo::Result<String> {
         may_read(conn, &header).await?;
         self.touch();
         let list = nyx_system_proto::read_history(&upgrade::history_file(&self.config), limit.min(1000) as usize);
         serde_json::to_string(&list).map_err(failed)
     }
 
-    async fn generations(&self, #[zbus(header)] header: Header<'_>, #[zbus(connection)] conn: &Connection) -> fdo::Result<String> {
+    async fn generations(
+        &self,
+        #[zbus(header)] header: Header<'_>,
+        #[zbus(connection)] conn: &Connection,
+    ) -> fdo::Result<String> {
         may_read(conn, &header).await?;
         self.touch();
         serde_json::to_string(&generations::list().map_err(failed)?).map_err(failed)

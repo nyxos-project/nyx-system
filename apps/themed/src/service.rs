@@ -167,7 +167,8 @@ impl Service {
         blocking(move || {
             let app = (!app_id.is_empty()).then_some(app_id.as_str());
             let r = core::resolve_effective_theme(app, &core::suite(), &A11y::system());
-            serde_json::to_string(&snapshot::Snapshot::from_resolved(&r, snapshot::generation(), "resolve")).map_err(|e| e.to_string())
+            serde_json::to_string(&snapshot::Snapshot::from_resolved(&r, snapshot::generation(), "resolve"))
+                .map_err(|e| e.to_string())
         })
         .await
     }

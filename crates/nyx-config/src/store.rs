@@ -259,9 +259,7 @@ fn same(a: &Value, b: &Value) -> bool {
     match (a, b) {
         (Value::Integer(x), Value::Float(y)) | (Value::Float(y), Value::Integer(x)) => (*x as f64 - y).abs() < 1e-9,
         (Value::Array(x), Value::Array(y)) => x.len() == y.len() && x.iter().zip(y).all(|(a, b)| same(a, b)),
-        (Value::Table(x), Value::Table(y)) => {
-            x.len() == y.len() && x.iter().all(|(k, v)| y.get(k).is_some_and(|w| same(v, w)))
-        }
+        (Value::Table(x), Value::Table(y)) => x.len() == y.len() && x.iter().all(|(k, v)| y.get(k).is_some_and(|w| same(v, w))),
         _ => a == b,
     }
 }
@@ -457,10 +455,11 @@ mod tests {
         let d = tempfile::tempdir().unwrap();
         let s = store(d.path(), "icon_size = 48\n");
         let (tx, rx) = mpsc::channel();
-        let _w = s.watch(move || {
-            let _ = tx.send(());
-        })
-        .unwrap();
+        let _w = s
+            .watch(move || {
+                let _ = tx.send(());
+            })
+            .unwrap();
         std::fs::write(s.layers.defaults.join("bar.toml"), "x = 1\n").unwrap();
         assert!(rx.recv_timeout(Duration::from_millis(300)).is_err(), "another domain's file isn't this one");
         s.set("icon_size", Value::Integer(40)).unwrap();
