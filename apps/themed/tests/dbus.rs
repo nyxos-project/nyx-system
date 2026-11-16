@@ -1,7 +1,7 @@
 //! The theme service on a private session bus. Needs a bus of its own, so it is
 //! ignored by default; run it with
 //!
-//!     dbus-run-session -- cargo test -p nyx-themed --test dbus -- --ignored
+//!     dbus-run-session -- cargo test -p nyx-themed --test dbus -- --ignored --test-threads=1
 //!
 //! Everything runs in scratch XDG folders with the desktop outputs off.
 
@@ -158,4 +158,30 @@ async fn live_switching_overrides_and_restarts() {
     let themes: String = p.call("ListThemes", &()).await.unwrap();
     assert!(themes.contains("\"catppuccin-mocha\""));
     drop(svc);
+}
+
+#[tokio::test]
+#[ignore = "needs its own session bus (dbus-run-session)"]
+async fn wallpaper_is_the_users_choice_until_cleared() {
+    let s = scratch();
+    let root = s.0.clone();
+    let _svc = Running(service(&root));
+    let conn = zbus::Connection::session().await.unwrap();
+    wait_for_name(&conn).await;
+    let p = proxy(&conn).await;
+    let picture = root.join("data/photo.jpg");
+    std::fs::write(&picture, b"jpeg").unwrap();
+    let appearance = root.join("config/nyx/appearance.toml");
+
+    let () = p.call("SetWallpaper", &(picture.to_string_lossy().as_ref(),)).await.unwrap();
+    let text = std::fs::read_to_string(&appearance).unwrap();
+    assert!(text.contains(&format!("wallpaper = \"{}\"", picture.display())), "{text}");
+
+    // Not a file, or not absolute: refused, the choice kept.
+    assert!(p.call::<_, _, ()>("SetWallpaper", &("photo.jpg",)).await.is_err());
+    assert!(p.call::<_, _, ()>("SetWallpaper", &("/no/such/picture.png",)).await.is_err());
+    assert!(std::fs::read_to_string(&appearance).unwrap().contains("photo.jpg"));
+
+    let () = p.call("SetWallpaper", &("",)).await.unwrap();
+    assert!(!std::fs::read_to_string(&appearance).unwrap_or_default().contains("wallpaper"));
 }

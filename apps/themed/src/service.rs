@@ -214,6 +214,27 @@ impl Service {
         Ok(())
     }
 
+    /// The desktop's wallpaper: a picture's absolute path (it's shown as the user's own
+    /// choice over the theme's), or empty to go back to the theme's.
+    async fn set_wallpaper(&self, #[zbus(connection)] conn: &Connection, path: String) -> fdo::Result<()> {
+        blocking(move || {
+            let layers = nyx_config::Layers::standard();
+            if path.is_empty() {
+                return layers.reset(nyx_config::Layer::User, "appearance", "wallpaper").map_err(|e| format!("{e:#}"));
+            }
+            let p = std::path::Path::new(&path);
+            if !p.is_absolute() || !p.is_file() {
+                return Err(format!("{path} isn't a picture on this computer"));
+            }
+            layers
+                .set(nyx_config::Layer::User, "appearance", "wallpaper", toml::Value::String(path))
+                .map_err(|e| format!("{e:#}"))
+        })
+        .await?;
+        changed(conn, &self.state, "wallpaper-set").await;
+        Ok(())
+    }
+
     /// Appearance back to the defaults.
     async fn reset(&self, #[zbus(connection)] conn: &Connection) -> fdo::Result<()> {
         blocking(core::reset_appearance).await?;
