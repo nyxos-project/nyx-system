@@ -13,13 +13,16 @@ use nyx_update::policy::{self, Network, Policy};
 use nyx_update::run::Outcome;
 use nyx_update::{Ambiguous, Category, Item, Pick, Plan, Snapshot, Step, Target, Unknown};
 
-pub const USAGE: &str = "  nyx-system update [TARGET...] [--dry-run] [--yes] [--json]
+pub const USAGE: &str = "  nyx-system update [TARGET...] [--dry-run|--prepare|--finish] [--yes] [--json]
                                           Update everything, or: system (NyxOS and the
                                           Nyx apps built into it), apps (your apps,
                                           Flatpaks), tools (coding agents, your mise
                                           and uv tools), firmware, or one thing by
-                                          name (claude, codex, firefox...). Plans
-                                          first and asks; --dry-run only plans
+                                          name (claude, codex, firefox...). Plans,
+                                          builds the system's part and shows what it
+                                          changes, then asks; --dry-run stops there,
+                                          --prepare keeps it built for --finish (no
+                                          download or build again); --discard drops it
   nyx-system update check [--json]        What has updates (the last check's, offline)
   nyx-system update status [--notify] [--json]
                                           Everything installed: its version, what's
@@ -33,6 +36,9 @@ pub const USAGE: &str = "  nyx-system update [TARGET...] [--dry-run] [--yes] [--
 #[derive(Default)]
 struct Flags {
     dry_run: bool,
+    prepare: bool,
+    finish: bool,
+    discard: bool,
     yes: bool,
     json: bool,
     notify: bool,
@@ -45,6 +51,9 @@ fn flags(args: &[&str]) -> Result<(Flags, Vec<String>)> {
     for a in args {
         match *a {
             "--dry-run" | "-n" => f.dry_run = true,
+            "--prepare" => f.prepare = true,
+            "--finish" => f.finish = true,
+            "--discard" => f.discard = true,
             "--yes" | "-y" => f.yes = true,
             "--json" => f.json = true,
             "--notify" => f.notify = true,
@@ -154,6 +163,13 @@ fn print_plan(plan: &Plan) {
 
 async fn update(args: &[&str]) -> Result<()> {
     let (f, names) = flags(args)?;
+    if f.discard {
+        nyx_update::run::discard().await?;
+        if !f.json {
+            println!("The prepared update was set aside; nothing changed.");
+        }
+        return Ok(());
+    }
     let request = if names.is_empty() { "nyx update".to_string() } else { format!("nyx update {}", names.join(" ")) };
     match policy::network().await {
         Network::Offline => {
@@ -178,20 +194,57 @@ async fn update(args: &[&str]) -> Result<()> {
     let mut plan = nyx_update::plan(&snapshot, &targets, &picks, &request);
     plan.check_seconds = check_seconds;
 
-    if f.json && f.dry_run {
-        println!("{}", serde_json::to_string_pretty(&plan)?);
-        return Ok(());
-    }
     if !f.json {
         print_plan(&plan);
     }
-    if f.dry_run {
-        return Ok(());
-    }
-    if plan.suggest_system && !f.yes && confirm("Update the system instead?")? {
+    if plan.suggest_system && !f.yes && !f.dry_run && !f.prepare && confirm("Update the system instead?")? {
         plan = system_plan(&snapshot, &targets, &request);
         plan.check_seconds = check_seconds;
         print_plan(&plan);
+    }
+
+    // The system's part is built before anyone agrees to it, so they see what it changes:
+    // packages, size, a restart. Unattended runs (--yes alone) and --finish skip this.
+    let has_system = plan.steps.iter().any(|s| matches!(s, Step::System { .. }));
+    let preview_first = has_system && !f.finish && (f.dry_run || f.prepare || !f.yes);
+    let mut preview = None;
+    if preview_first {
+        let quiet = f.json;
+        let mut line = |l: &str| {
+            if let Some(stage) = l.strip_prefix("== ") {
+                eprintln!("==> {stage}");
+            } else if !quiet {
+                eprintln!("    {l}");
+            }
+        };
+        if !f.json {
+            eprintln!("Building the system update to see what it changes…");
+        }
+        let p = nyx_update::run::prepare(&plan, &mut line).await?;
+        if p.as_ref().is_some_and(|r| !r.prepared) {
+            // Nothing to switch to: the system's part is already current.
+            plan.steps.retain(|s| !matches!(s, Step::System { .. }));
+        }
+        if !f.json
+            && let Some(r) = &p
+        {
+            print_preview(r);
+        }
+        preview = p;
+    }
+    let prepared = preview.as_ref().is_some_and(|r| r.prepared);
+    if f.dry_run || f.prepare {
+        if f.dry_run && prepared {
+            nyx_update::run::discard().await?;
+        }
+        if f.json {
+            let mut v = serde_json::to_value(&plan)?;
+            v["preview"] = serde_json::to_value(&preview)?;
+            println!("{}", serde_json::to_string_pretty(&v)?);
+        } else if f.prepare && prepared {
+            println!("Ready: nyx update --finish switches to it, nyx update --discard sets it aside.");
+        }
+        return Ok(());
     }
     if plan.is_empty() {
         if f.json {
@@ -205,6 +258,9 @@ async fn update(args: &[&str]) -> Result<()> {
     let mut firmware = has_firmware && !plan.firmware_implied && f.yes;
     if !f.yes {
         if !confirm("Update?")? {
+            if prepared {
+                nyx_update::run::discard().await?;
+            }
             return Err(exit::fail(exit::DECLINED, "nothing was changed"));
         }
         if has_firmware {
@@ -225,7 +281,8 @@ async fn update(args: &[&str]) -> Result<()> {
             eprintln!("{l}");
         }
     };
-    let outcome = nyx_update::run::execute(&plan, firmware, &mut line).await?;
+    let stage = if prepared || f.finish { nyx_system_proto::UpgradeStage::Finish } else { nyx_system_proto::UpgradeStage::Full };
+    let outcome = nyx_update::run::execute_with(&plan, firmware, stage, &mut line).await?;
     // With --json, what failed is in the outcome (Settings and the Store read it).
     if json {
         println!("{}", serde_json::to_string_pretty(&outcome)?);
@@ -237,6 +294,31 @@ async fn update(args: &[&str]) -> Result<()> {
         std::process::exit(if some { exit::PARTIAL } else { exit::FAILED });
     }
     Ok(())
+}
+
+/// What switching to the prepared system would change.
+fn print_preview(r: &nyx_system_proto::UpgradeResult) {
+    if !r.prepared {
+        println!("• The system is already up to date.");
+        return;
+    }
+    println!("The system update changes {} package{}:", r.changes.len(), if r.changes.len() == 1 { "" } else { "s" });
+    for c in r.changes.iter().take(40) {
+        println!("  {}: {} → {}", c.name, c.from, c.to);
+    }
+    if r.changes.len() > 40 {
+        println!("  … and {} more", r.changes.len() - 40);
+    }
+    if let Some(bytes) = r.size_change {
+        let mb = bytes as f64 / 1e6;
+        println!("• The system's files {} by {:.0} MB.", if bytes >= 0 { "grow" } else { "shrink" }, mb.abs());
+    }
+    if r.reboot {
+        println!("• Restart the computer afterwards: the kernel changes.");
+    }
+    if !r.restart.is_empty() {
+        println!("• Reopen afterwards: {}.", r.restart.join(", "));
+    }
 }
 
 /// The plan for the whole channel, when something asked for comes with it.

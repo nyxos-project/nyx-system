@@ -9,7 +9,7 @@
 use crate::rebuild::{self, run};
 use crate::{Config, Manager, generations, snapshots};
 use anyhow::{Context, Result, bail, ensure};
-use nyx_system_proto::{HistoryEntry, TOOLS_FILE, ToolPin, UpgradeRequest, UpgradeResult, VersionChange};
+use nyx_system_proto::{HistoryEntry, TOOLS_FILE, ToolPin, UpgradeRequest, UpgradeResult, UpgradeStage, VersionChange};
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
@@ -140,8 +140,15 @@ fn replaced_programs(before: &Before) -> Vec<String> {
     if before.system.as_ref() == Some(&now) || before.closure.is_empty() {
         return Vec::new();
     }
-    let after = closure(&now);
-    let gone: BTreeSet<&String> = before.closure.difference(&after).collect();
+    running_from(&before.closure, &closure(&now))
+}
+
+/// Programs running from store paths in `old` that `new` doesn't have.
+fn running_from(old: &BTreeSet<String>, new: &BTreeSet<String>) -> Vec<String> {
+    if old.is_empty() {
+        return Vec::new();
+    }
+    let gone: BTreeSet<&String> = old.difference(new).collect();
     let mut names = BTreeSet::new();
     for entry in std::fs::read_dir("/proc").into_iter().flatten().flatten() {
         let pid = entry.file_name();
@@ -164,7 +171,11 @@ fn replaced_programs(before: &Before) -> Vec<String> {
 /// `nix store diff-closures OLD NEW`: `firefox: 132.0 → 133.0, +1.2 MiB` lines.
 fn diff(before: &Before) -> Vec<VersionChange> {
     let (Some(old), Some(new)) = (&before.system, current_system()) else { return Vec::new() };
-    let out = std::process::Command::new("nix").args(["store", "diff-closures"]).arg(old).arg(&new).output();
+    diff_paths(old, &new)
+}
+
+fn diff_paths(old: &Path, new: &Path) -> Vec<VersionChange> {
+    let out = std::process::Command::new("nix").args(["store", "diff-closures"]).arg(old).arg(new).output();
     out.map(|o| parse_diff(&String::from_utf8_lossy(&o.stdout))).unwrap_or_default()
 }
 
@@ -186,6 +197,10 @@ fn parse_diff(text: &str) -> Vec<VersionChange> {
 
 pub async fn upgrade(config: &Config, req: &UpgradeRequest, emitter: &SignalEmitter<'_>) -> Result<UpgradeResult> {
     req.validate()?;
+    // Preparing and setting aside change nothing: no history entry.
+    if matches!(req.stage, UpgradeStage::Prepare | UpgradeStage::Discard) {
+        return run_upgrade(config, req, &mut BTreeMap::new(), emitter).await;
+    }
     let mut entry = HistoryEntry {
         time: now(),
         scope: "system".into(),
@@ -226,6 +241,11 @@ async fn run_upgrade(
     seconds: &mut BTreeMap<String, u64>,
     emitter: &SignalEmitter<'_>,
 ) -> Result<UpgradeResult> {
+    match req.stage {
+        UpgradeStage::Discard => return discard(config),
+        UpgradeStage::Finish => return finish(config, seconds, emitter).await,
+        UpgradeStage::Full | UpgradeStage::Prepare => {}
+    }
     let mut timed = |stage: &str, since: Instant| {
         seconds.insert(stage.to_string(), since.elapsed().as_secs());
     };
@@ -255,6 +275,8 @@ async fn run_upgrade(
         }
         pins
     };
+    // A new prepare replaces one waiting.
+    let _ = std::fs::remove_dir_all(prepared_dir(config));
 
     // What to put back if it fails.
     let backup = config.state.join("update-backup");
@@ -270,49 +292,239 @@ async fn run_upgrade(
     let before = Before { closure: system.as_deref().map(closure).unwrap_or_default(), system };
 
     let what = if req.channel { "an update" } else { "a tool update" };
-    let pre = snapshots::before(what, emitter).await;
+    let prepare = req.stage == UpgradeStage::Prepare;
+    // Snapshots go with switching, which preparing doesn't do.
+    let pre = if prepare { Vec::new() } else { snapshots::before(what, emitter).await };
     let result = async {
-        if req.channel {
-            stage(emitter, "Downloading the newest channel").await;
-            let flake = config.flake.display().to_string();
-            let t = Instant::now();
-            let r = run(emitter, &config.state, "nix", &["flake", "update", "--flake", &flake]).await;
-            timed("download", t);
-            r?;
-            // Stable moves only to a signed release; otherwise this is undone below.
-            let locked = std::fs::read_to_string(&lock).ok().and_then(|t| nyx_update::signed::channel_in_lock(&t));
-            if let Some(channel) = locked.filter(|c| c.needs_signature(Path::new(nyx_update::signed::SIGNERS))) {
-                stage(emitter, "Checking the release signature").await;
-                let tag = tokio::task::spawn_blocking(move || {
-                    nyx_update::signed::verify(&channel.url(), &channel.rev, Path::new(nyx_update::signed::SIGNERS))
-                })
-                .await??;
-                eprintln!("the channel is the signed release {tag}");
-            }
-            // The channel brings every tool's pin.
-            let _ = std::fs::remove_file(tools_file(config));
-        } else {
-            let mut local: serde_json::Map<String, serde_json::Value> =
-                std::fs::read_to_string(tools_file(config)).ok().and_then(|t| serde_json::from_str(&t).ok()).unwrap_or_default();
-            local.extend(pins.clone());
-            std::fs::create_dir_all(&config.overrides)?;
-            let tmp = tools_file(config).with_extension("json.new");
-            std::fs::write(&tmp, serde_json::to_string_pretty(&local)? + "\n")?;
-            std::fs::rename(tmp, tools_file(config))?;
-        }
+        let t = Instant::now();
+        let r = fetch(config, req, &pins, emitter).await;
+        timed("download", t);
+        r?;
         // Building also downloads what the new system needs.
         let t = Instant::now();
         let r = rebuild::build(config, emitter).await;
         timed("build", t);
         r?;
+        if prepare {
+            return Ok(());
+        }
         let t = Instant::now();
         let r = rebuild::switch(config, emitter).await;
         timed("switch", t);
         r
     }
     .await;
-    snapshots::after(pre, what, emitter).await;
+    if !prepare {
+        snapshots::after(pre, what, emitter).await;
+    }
 
+    if let Err(e) = result {
+        restore(config, saved_lock.as_deref(), saved_tools.as_deref());
+        if generations::current() != before_gen {
+            let _ = rebuild::previous_generation(emitter, &config.state).await;
+        }
+        let _ = std::fs::remove_file(config.state.join(MARKER));
+        bail!("{e:#}; the update was undone");
+    }
+    let names: Vec<String> = pins
+        .iter()
+        .map(|(k, v)| format!("{} {}", v["name"].as_str().unwrap_or(k), v["version"].as_str().unwrap_or("")))
+        .collect();
+    if prepare {
+        let prepared = keep_prepared(config, req, &before, before_gen, names);
+        // The system stays as it was until the person finishes: the new lock and pins
+        // wait aside, so another change in the meantime doesn't take the update along.
+        restore(config, saved_lock.as_deref(), saved_tools.as_deref());
+        let _ = std::fs::remove_file(config.state.join(MARKER));
+        rebuild::remember(config)?;
+        stage(emitter, "Ready").await;
+        return prepared;
+    }
+    let _ = std::fs::remove_file(config.state.join(MARKER));
+    rebuild::remember(config)?;
+    stage(emitter, "Done").await;
+    Ok(switched(req.channel, &names, &before, before_gen))
+}
+
+/// The channel update (and its signature, on stable), or the tools' new pins, into the
+/// system's flake. Undone by the caller if anything after fails.
+async fn fetch(
+    config: &Config,
+    req: &UpgradeRequest,
+    pins: &serde_json::Map<String, serde_json::Value>,
+    emitter: &SignalEmitter<'_>,
+) -> Result<()> {
+    if req.channel {
+        stage(emitter, "Downloading the newest channel").await;
+        let flake = config.flake.display().to_string();
+        run(emitter, &config.state, "nix", &["flake", "update", "--flake", &flake]).await?;
+        // Stable moves only to a signed release; otherwise this is undone.
+        let lock = config.flake.join("flake.lock");
+        let locked = std::fs::read_to_string(&lock).ok().and_then(|t| nyx_update::signed::channel_in_lock(&t));
+        if let Some(channel) = locked.filter(|c| c.needs_signature(Path::new(nyx_update::signed::SIGNERS))) {
+            stage(emitter, "Checking the release signature").await;
+            let tag = tokio::task::spawn_blocking(move || {
+                nyx_update::signed::verify(&channel.url(), &channel.rev, Path::new(nyx_update::signed::SIGNERS))
+            })
+            .await??;
+            eprintln!("the channel is the signed release {tag}");
+        }
+        // The channel brings every tool's pin.
+        let _ = std::fs::remove_file(tools_file(config));
+    } else {
+        let mut local: serde_json::Map<String, serde_json::Value> =
+            std::fs::read_to_string(tools_file(config)).ok().and_then(|t| serde_json::from_str(&t).ok()).unwrap_or_default();
+        local.extend(pins.clone());
+        std::fs::create_dir_all(&config.overrides)?;
+        let tmp = tools_file(config).with_extension("json.new");
+        std::fs::write(&tmp, serde_json::to_string_pretty(&local)? + "\n")?;
+        std::fs::rename(tmp, tools_file(config))?;
+    }
+    Ok(())
+}
+
+/// What a finished update reports.
+fn switched(channel: bool, names: &[String], before: &Before, before_gen: Option<u32>) -> UpgradeResult {
+    let after_gen = generations::current();
+    let changes = diff(before);
+    let summary = if after_gen == before_gen {
+        "Already up to date".to_string()
+    } else if channel {
+        format!("Updated NyxOS ({} package{} changed)", changes.len(), if changes.len() == 1 { "" } else { "s" })
+    } else {
+        format!("Updated {}", names.join(", "))
+    };
+    UpgradeResult {
+        summary,
+        generation_before: before_gen,
+        generation_after: after_gen,
+        reboot: needs_reboot(),
+        restart: replaced_programs(before),
+        changes,
+        ..UpgradeResult::default()
+    }
+}
+
+/// An update built and waiting for the person (`update-prepared/`): the new flake.lock
+/// and tools.json, and what was built from them.
+fn prepared_dir(config: &Config) -> PathBuf {
+    config.state.join("update-prepared")
+}
+
+/// A prepared update waits this long; after it, finishing asks for a new check.
+const PREPARED_FOR: i64 = 24 * 3600;
+
+#[derive(Debug, Serialize, Deserialize)]
+struct Prepared {
+    time: i64,
+    channel: bool,
+    request: String,
+    built: PathBuf,
+    /// tools.json as the update had it (absent when the channel removed it).
+    tools: bool,
+    names: Vec<String>,
+    before: Option<u32>,
+}
+
+/// Keep the new lock, pins and build aside, and say what switching to them would change.
+fn keep_prepared(
+    config: &Config,
+    req: &UpgradeRequest,
+    before: &Before,
+    before_gen: Option<u32>,
+    names: Vec<String>,
+) -> Result<UpgradeResult> {
+    let built = std::fs::canonicalize(config.state.join("result")).context("the build left no result")?;
+    let dir = prepared_dir(config);
+    std::fs::create_dir_all(&dir)?;
+    std::fs::copy(config.flake.join("flake.lock"), dir.join("flake.lock"))?;
+    let tools = std::fs::copy(tools_file(config), dir.join("tools.json")).is_ok();
+    let meta = Prepared {
+        time: now(),
+        channel: req.channel,
+        request: req.request.clone(),
+        built: built.clone(),
+        tools,
+        names,
+        before: before_gen,
+    };
+    std::fs::write(dir.join("prepared.json"), serde_json::to_string_pretty(&meta)?)?;
+    if before.system.as_ref() == Some(&built) {
+        let _ = std::fs::remove_dir_all(&dir);
+        return Ok(UpgradeResult {
+            summary: "Already up to date".into(),
+            generation_before: before_gen,
+            generation_after: before_gen,
+            ..UpgradeResult::default()
+        });
+    }
+    let changes = before.system.as_deref().map(|old| diff_paths(old, &built)).unwrap_or_default();
+    let size = |p: &Path| closure_size(p);
+    let size_change = match (before.system.as_deref().and_then(size), size(&built)) {
+        (Some(a), Some(b)) => Some(b as i64 - a as i64),
+        _ => None,
+    };
+    let after = closure(&built);
+    Ok(UpgradeResult {
+        summary: format!("Ready to update: {} package{} change", changes.len(), if changes.len() == 1 { "" } else { "s" }),
+        generation_before: before_gen,
+        generation_after: before_gen,
+        reboot: boots_differently(&built),
+        restart: running_from(&before.closure, &after),
+        changes,
+        prepared: true,
+        size_change,
+        ..UpgradeResult::default()
+    })
+}
+
+/// Switch to the prepared update: its lock and pins back in place, built again (the
+/// store has it: nothing is downloaded) and switched to only if that's what was shown.
+async fn finish(config: &Config, seconds: &mut BTreeMap<String, u64>, emitter: &SignalEmitter<'_>) -> Result<UpgradeResult> {
+    let dir = prepared_dir(config);
+    let meta: Prepared = std::fs::read_to_string(dir.join("prepared.json"))
+        .ok()
+        .and_then(|t| serde_json::from_str(&t).ok())
+        .context("no update is waiting; check for updates again")?;
+    if now() - meta.time > PREPARED_FOR || generations::current() != meta.before {
+        let _ = std::fs::remove_dir_all(&dir);
+        bail!("the prepared update is out of date; check for updates again");
+    }
+    let backup = config.state.join("update-backup");
+    std::fs::create_dir_all(&backup)?;
+    let lock = config.flake.join("flake.lock");
+    let saved_lock = std::fs::copy(&lock, backup.join("flake.lock")).ok().map(|_| backup.join("flake.lock"));
+    let saved_tools = std::fs::copy(tools_file(config), backup.join("tools.json")).ok().map(|_| backup.join("tools.json"));
+    let before_gen = generations::current();
+    std::fs::write(
+        config.state.join(MARKER),
+        serde_json::to_string(&Marker { before: before_gen, lock: saved_lock.clone(), tools: saved_tools.clone() })?,
+    )?;
+    let system = current_system();
+    let before = Before { closure: system.as_deref().map(closure).unwrap_or_default(), system };
+    let what = if meta.channel { "an update" } else { "a tool update" };
+    let pre = snapshots::before(what, emitter).await;
+    let result = async {
+        std::fs::copy(dir.join("flake.lock"), &lock)?;
+        if meta.tools {
+            std::fs::create_dir_all(&config.overrides)?;
+            std::fs::copy(dir.join("tools.json"), tools_file(config))?;
+        } else {
+            let _ = std::fs::remove_file(tools_file(config));
+        }
+        let t = Instant::now();
+        rebuild::build(config, emitter).await?;
+        seconds.insert("build".into(), t.elapsed().as_secs());
+        let built = std::fs::canonicalize(config.state.join("result")).context("the build left no result")?;
+        ensure!(built == meta.built, "the system changed since this update was prepared; check for updates again");
+        let t = Instant::now();
+        rebuild::switch(config, emitter).await?;
+        seconds.insert("switch".into(), t.elapsed().as_secs());
+        anyhow::Ok(())
+    }
+    .await;
+    snapshots::after(pre, what, emitter).await;
+    let _ = std::fs::remove_dir_all(&dir);
     if let Err(e) = result {
         restore(config, saved_lock.as_deref(), saved_tools.as_deref());
         if generations::current() != before_gen {
@@ -324,31 +536,36 @@ async fn run_upgrade(
     let _ = std::fs::remove_file(config.state.join(MARKER));
     rebuild::remember(config)?;
     stage(emitter, "Done").await;
-    let after_gen = generations::current();
-    let changes = diff(&before);
-    let summary = if after_gen == before_gen {
-        "Already up to date".to_string()
-    } else if req.channel {
-        format!("Updated NyxOS ({} package{} changed)", changes.len(), if changes.len() == 1 { "" } else { "s" })
-    } else {
-        let names: Vec<String> = pins
-            .iter()
-            .map(|(k, v)| format!("{} {}", v["name"].as_str().unwrap_or(k), v["version"].as_str().unwrap_or("")))
-            .collect();
-        format!("Updated {}", names.join(", "))
-    };
+    Ok(switched(meta.channel, &meta.names, &before, before_gen))
+}
+
+/// Forget a prepared update; the system never had it.
+fn discard(config: &Config) -> Result<UpgradeResult> {
+    let had = prepared_dir(config).exists();
+    let _ = std::fs::remove_dir_all(prepared_dir(config));
     Ok(UpgradeResult {
-        summary,
-        generation_before: before_gen,
-        generation_after: after_gen,
-        reboot: needs_reboot(),
-        restart: replaced_programs(&before),
-        changes,
-        seconds: BTreeMap::new(),
+        summary: if had { "The update was set aside; nothing changed" } else { "No update was waiting" }.into(),
+        generation_before: generations::current(),
+        generation_after: generations::current(),
+        ..UpgradeResult::default()
     })
 }
 
-/// Going back a generation, recorded in the history like an update.
+/// `nix path-info --closure-size`: how much space a system takes with everything it needs.
+fn closure_size(path: &Path) -> Option<u64> {
+    let out = std::process::Command::new("nix").args(["path-info", "--closure-size"]).arg(path).output().ok()?;
+    String::from_utf8_lossy(&out.stdout).split_whitespace().nth(1)?.parse().ok()
+}
+
+/// The kernel, initrd or kernel modules of `system` differ from what the computer started with.
+fn boots_differently(system: &Path) -> bool {
+    ["kernel", "initrd", "kernel-modules"].iter().any(|f| {
+        let booted = std::fs::canonicalize(format!("/run/booted-system/{f}")).ok();
+        let new = std::fs::canonicalize(system.join(f)).ok();
+        booted.is_some() && booted != new
+    })
+}
+
 pub async fn rollback(config: &Config, emitter: &SignalEmitter<'_>) -> Result<String> {
     let before = generations::current();
     let start = Instant::now();

@@ -983,10 +983,37 @@ pub struct UpgradeRequest {
     /// What the person asked for (`nyx update claude`), for the history.
     #[serde(default)]
     pub request: String,
+    /// All at once (the default, for unattended updates), or in two steps for a person
+    /// to confirm: prepare (fetch and build, say what would change, change nothing),
+    /// then finish (switch to exactly what was prepared) or discard.
+    #[serde(default, skip_serializing_if = "UpgradeStage::is_full")]
+    pub stage: UpgradeStage,
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum UpgradeStage {
+    #[default]
+    Full,
+    Prepare,
+    Finish,
+    Discard,
+}
+
+impl UpgradeStage {
+    fn is_full(&self) -> bool {
+        *self == UpgradeStage::Full
+    }
 }
 
 impl UpgradeRequest {
     pub fn validate(&self) -> Result<()> {
+        // Finishing or discarding works on what was prepared; it names nothing itself.
+        if matches!(self.stage, UpgradeStage::Finish | UpgradeStage::Discard) {
+            ensure!(self.tools.len() <= 50, "too many tools");
+            ensure!(self.request.len() <= 500 && !self.request.contains(['\n', '\0']), "the request is one line");
+            return Ok(());
+        }
         ensure!(self.channel || !self.tools.is_empty(), "nothing to update");
         ensure!(self.tools.len() <= 50, "too many tools");
         for t in &self.tools {
@@ -1029,6 +1056,13 @@ pub struct UpgradeResult {
     /// How long each stage took ([`HistoryEntry::seconds`]).
     #[serde(default)]
     pub seconds: BTreeMap<String, u64>,
+    /// Built and waiting for the person to finish or discard it (nothing switched yet):
+    /// `changes`, `reboot` and `restart` say what finishing would do.
+    #[serde(default)]
+    pub prepared: bool,
+    /// How much the system's files grow (or shrink, below 0) in bytes.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub size_change: Option<i64>,
 }
 
 /// One entry in the update history (`/var/lib/nyx-system/history.jsonl` for the
@@ -1359,8 +1393,17 @@ mod tests {
 
     #[test]
     fn upgrade_requests_are_validated() {
-        let ok = UpgradeRequest { channel: false, tools: vec!["claude-code".into()], request: "nyx update claude".into() };
+        let ok = UpgradeRequest { tools: vec!["claude-code".into()], request: "nyx update claude".into(), ..Default::default() };
         assert!(ok.validate().is_ok());
+        // Finishing or setting aside a prepared update names nothing.
+        for stage in [UpgradeStage::Finish, UpgradeStage::Discard] {
+            assert!(UpgradeRequest { stage, ..Default::default() }.validate().is_ok());
+        }
+        assert!(UpgradeRequest { stage: UpgradeStage::Prepare, ..Default::default() }.validate().is_err());
+        // A full update says nothing about its stage, so older managers read it.
+        assert!(!serde_json::to_string(&ok).unwrap().contains("stage"));
+        let prepare = UpgradeRequest { channel: true, stage: UpgradeStage::Prepare, ..Default::default() };
+        assert!(serde_json::to_string(&prepare).unwrap().contains("\"stage\":\"prepare\""));
         assert!(UpgradeRequest::default().validate().is_err(), "nothing to do");
         for bad in ["../x", "Claude", "a b", "-x", ""] {
             let r = UpgradeRequest { tools: vec![bad.into()], ..Default::default() };

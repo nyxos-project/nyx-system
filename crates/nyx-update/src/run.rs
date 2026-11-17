@@ -7,7 +7,7 @@
 use crate::{Plan, Step};
 use anyhow::{Context, Result, bail};
 use futures_util::StreamExt;
-use nyx_system_proto::{HistoryEntry, SystemProxy, UpgradeRequest, UpgradeResult};
+use nyx_system_proto::{HistoryEntry, SystemProxy, UpgradeRequest, UpgradeResult, UpgradeStage};
 use serde::{Deserialize, Serialize};
 use std::io::{BufRead, BufReader};
 use std::path::PathBuf;
@@ -90,12 +90,43 @@ async fn proxy() -> Result<SystemProxy<'static>> {
 /// Run `plan`; `line` gets progress as it comes (lines starting `== ` name a stage).
 /// `firmware` says whether the firmware step may run (the person agreed to it).
 pub async fn execute(plan: &Plan, firmware: bool, line: &mut dyn FnMut(&str)) -> Result<Outcome> {
+    execute_with(plan, firmware, UpgradeStage::Full, line).await
+}
+
+/// The plan's system step, built and kept waiting (nothing switched): what it would
+/// change, or `None` when the plan has no system step.
+pub async fn prepare(plan: &Plan, line: &mut dyn FnMut(&str)) -> Result<Option<UpgradeResult>> {
+    let Some((channel, tools)) = plan.steps.iter().find_map(|s| match s {
+        Step::System { channel, tools } => Some((*channel, tools.clone())),
+        _ => None,
+    }) else {
+        return Ok(None);
+    };
+    let _lock = lock()?;
+    let request = UpgradeRequest { channel, tools, request: plan.request.clone(), stage: UpgradeStage::Prepare };
+    call_upgrade(&request, line).await.map(Some)
+}
+
+/// Set a prepared system update aside.
+pub async fn discard() -> Result<()> {
+    let request = UpgradeRequest { stage: UpgradeStage::Discard, ..UpgradeRequest::default() };
+    call_upgrade(&request, &mut |_| {}).await.map(|_| ())
+}
+
+/// As [`execute`], with the system step finishing what [`prepare`] built
+/// (`UpgradeStage::Finish`) instead of fetching and building again.
+pub async fn execute_with(
+    plan: &Plan,
+    firmware: bool,
+    system_stage: UpgradeStage,
+    line: &mut dyn FnMut(&str),
+) -> Result<Outcome> {
     let _lock = lock()?;
     let mut out = Outcome::default();
     for step in &plan.steps {
         let start = std::time::Instant::now();
         let result = match step {
-            Step::System { channel, tools } => system(plan, *channel, tools, line).await,
+            Step::System { channel, tools } => system(plan, *channel, tools, system_stage, line).await,
             Step::Profile { names } => {
                 let result = profile(names, line).map(|(message, running)| {
                     out.restart.extend(running);
@@ -131,9 +162,16 @@ async fn system(
     plan: &Plan,
     channel: bool,
     tools: &[String],
+    stage: UpgradeStage,
     line: &mut dyn FnMut(&str),
 ) -> Result<(String, Option<UpgradeResult>)> {
-    let request = UpgradeRequest { channel, tools: tools.to_vec(), request: plan.request.clone() };
+    let request = UpgradeRequest { channel, tools: tools.to_vec(), request: plan.request.clone(), stage };
+    let result = call_upgrade(&request, line).await?;
+    Ok((result.summary.clone(), Some(result)))
+}
+
+/// The System Manager's Upgrade, its progress lines passed to `line`.
+async fn call_upgrade(request: &UpgradeRequest, line: &mut dyn FnMut(&str)) -> Result<UpgradeResult> {
     request.validate()?;
     let p = proxy().await?;
     let mut lines = p.receive_progress().await?;
@@ -154,8 +192,7 @@ async fn system(
         zbus::Error::MethodError(_, Some(text), _) => anyhow::anyhow!(text),
         e => e.into(),
     })?;
-    let result: UpgradeResult = serde_json::from_str(&reply).context("the System Manager's answer couldn't be read")?;
-    Ok((result.summary.clone(), Some(result)))
+    serde_json::from_str(&reply).context("the System Manager's answer couldn't be read")
 }
 
 /// Record a user step in the user's history, with how long it and the check took.

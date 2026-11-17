@@ -230,7 +230,7 @@ impl Manager {
 
     /// The whole channel, already authorized: what `Update` has always done.
     async fn channel_update(&self, uid: u32, request: &str, emitter: &SignalEmitter<'_>) -> anyhow::Result<String> {
-        let req = UpgradeRequest { channel: true, tools: Vec::new(), request: request.into() };
+        let req = UpgradeRequest { channel: true, tools: Vec::new(), request: request.into(), ..UpgradeRequest::default() };
         let result = upgrade::upgrade(&self.config, &req, emitter).await.map(|r| r.summary);
         audit(uid, action::UPDATE, "update", result.as_ref().map(String::as_str).unwrap_or("failed"));
         result
