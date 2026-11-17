@@ -427,7 +427,7 @@ note = "Downloads its speech and language models the first time you set it up. L
 [[item]]
 id = "nyx-chat"
 name = "Nyx Chat"
-summary = "Chat with AI models, local or online."
+summary = "Chat with AI models on this computer or your own servers."
 category = "nyx-communication"
 tier = "welcome"
 nyx = ["chat"]
