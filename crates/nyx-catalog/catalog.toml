@@ -1237,6 +1237,18 @@ bin = "herdr-app"
 note = "The desktop app, apart from the Herdr terminal multiplexer NyxOS includes."
 
 [[item]]
+id = "nyx-agents"
+name = "Nyx Agents"
+summary = "Your coding agents in native terminals, with sessions that keep running when you close it, and AI Lens for their activity, allowances and local models."
+category = "agent-apps"
+tier = "store"
+# Its session manager, nyx-agentd, starts from a socket in every session.
+scope = "system"
+nyx = ["agents"]
+aliases = ["ai-lens"]
+note = "Works with the coding agents you install from this section. Checking their subscription allowances stays off until you turn it on."
+
+[[item]]
 id = "ollama"
 name = "Ollama"
 summary = "Download and run models on this computer."
