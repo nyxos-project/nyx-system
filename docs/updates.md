@@ -151,14 +151,16 @@ or all):
 A pin's `update` object sets how CI treats it: `"enabled": false` keeps CI off it (and
 `upstream.kind = "manual"` tools have no feed to check), and `"autoMerge": true` lets a
 release that isn't a new major version merge itself once the required checks pass
-(`gh pr merge --auto`; branch protection decides which checks). Every pin starts with
-auto-merge off: a person reviews each PR until a tool has a record of clean updates, and
+(`gh pr merge --auto`; branch protection decides which checks). nyxos' `main` requires
+no checks today (only `stable` requires `ci`), so no pin turns auto-merge on. Every pin
+starts with it off: a person reviews each PR until a tool has a record of clean updates, and
 breaking packaging changes (a new `recipe`) are never a pin-only PR. A pull request merged
 by the workflow's token starts no CI on `main`, so `publish` starts it when `main`'s head has
 none: that run is what fills the cache.
 
-A merged PR lands on `main` (testing); `stable` moves when the known-good process promotes
-it, and that's when stable machines see it.
+A merged PR lands on `main` (testing); `stable` moves when nyxos' `scripts/promote-stable`
+promotes it (both repositories' CI green, a signed `known-good/<n>` tag), and that's when
+stable machines see it.
 
 Every action in the workflows is pinned to a commit (Dependabot proposes new ones), and a
 `tool-update/*` build gets no Cachix token at all: it runs a new upstream binary.
