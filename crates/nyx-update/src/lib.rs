@@ -180,8 +180,14 @@ pub struct Channel {
 }
 
 impl Channel {
+    /// A system locked to no revision (the install USB's copy of NyxOS, until its first
+    /// update) has one whenever the channel has a head.
     pub fn has_update(&self) -> bool {
-        matches!((&self.installed, &self.head), (Some(i), Some(h)) if i.rev != h.rev && h.last_modified >= i.last_modified)
+        match (&self.installed, &self.head) {
+            (Some(i), Some(h)) => i.rev != h.rev && h.last_modified >= i.last_modified,
+            (None, Some(_)) => true,
+            _ => false,
+        }
     }
 }
 

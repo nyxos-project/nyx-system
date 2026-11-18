@@ -513,6 +513,27 @@ mod tests {
     }
 
     #[test]
+    fn an_install_from_the_usb_stick_updates_to_the_channel() {
+        // The installer locks NyxOS to the live USB's copy: no revision to compare.
+        let lock = r#"{
+          "nodes": {
+            "nyxos": {
+              "locked": {"lastModified": 0, "narHash": "sha256-x", "path": "/nix/store/aaaa-source", "type": "path"},
+              "original": {"owner": "nyxos-project", "ref": "stable", "repo": "nyxos", "type": "github"}
+            },
+            "root": {"inputs": {"nyxos": "nyxos"}}
+          },
+          "root": "root", "version": 7
+        }"#;
+        let mut c = parse_lock(lock).unwrap();
+        assert_eq!(c.url.as_deref(), Some("github:nyxos-project/nyxos/stable"));
+        assert_eq!(c.installed, None);
+        assert!(!c.has_update(), "not before the channel is checked");
+        c.head = Some(Rev { rev: "1c584ec".into(), last_modified: 1_795_000_000 });
+        assert!(c.has_update());
+    }
+
+    #[test]
     fn the_head_brings_its_pins() {
         let dir = tempfile::tempdir().unwrap();
         std::fs::create_dir_all(dir.path().join("pkgs/tools")).unwrap();
