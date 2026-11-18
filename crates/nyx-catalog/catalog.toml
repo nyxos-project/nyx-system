@@ -433,6 +433,14 @@ tier = "welcome"
 nyx = ["chat"]
 
 [[item]]
+id = "nyx-pulse"
+name = "Nyx Pulse"
+summary = "Telegram, with calls, stories, Mini Apps and business tools."
+category = "nyx-communication"
+tier = "store"
+nyx = ["pulse"]
+
+[[item]]
 id = "nyx-weather"
 name = "Nyx Weather"
 summary = "Forecasts and radar."
@@ -456,6 +464,16 @@ category = "nyx-productivity"
 tier = "store"
 nyx = ["reminders"]
 note = "Syncing lists with online accounts is a preview."
+
+[[item]]
+id = "nyx-desktop-widgets"
+name = "Nyx Desktop Widgets"
+summary = "Plugin widgets on the desktop, behind windows, on every monitor."
+category = "nyx-tools"
+tier = "store"
+# Part of the desktop: drawn by Nyx Shell in every session.
+scope = "system"
+nyx = ["desktop-widgets"]
 
 [[item]]
 id = "nyx-clipboard"
