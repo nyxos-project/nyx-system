@@ -1071,6 +1071,24 @@ services = ["tailscale"]
 bin = "tailscale"
 
 [[item]]
+id = "mullvad-vpn"
+name = "Mullvad VPN"
+summary = "Mullvad's VPN app and its background service; sign in with your account number."
+category = "network"
+tier = "store"
+services = ["mullvad"]
+bin = "mullvad"
+
+[[item]]
+id = "proton-vpn"
+name = "Proton VPN"
+summary = "Proton's VPN app."
+category = "network"
+tier = "store"
+packages = ["proton-vpn"]
+bin = "protonvpn-app"
+
+[[item]]
 id = "ssh-server"
 name = "Remote login (OpenSSH)"
 summary = "Sign in to this computer from others over SSH."

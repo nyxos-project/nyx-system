@@ -146,6 +146,7 @@ pub const SERVICES: &[(&str, &str)] = &[
     ("incus", "Incus containers and virtual machines"),
     ("libvirtd", "Virtual machines (libvirt)"),
     ("ollama", "Ollama, local AI models"),
+    ("mullvad", "Mullvad VPN"),
 ];
 
 /// Groups the manager may add users to, with what membership allows.
