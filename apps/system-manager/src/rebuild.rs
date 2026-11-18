@@ -24,6 +24,35 @@ fn shown(program: &str, args: &[&str]) -> String {
     .into()
 }
 
+/// More packages to compile than a change normally needs: past this, a build checks that
+/// the binary caches answer before compiling them all.
+const MANY_BUILDS: usize = 40;
+
+/// `these 12 derivations will be built:` (Nix's line before the list), as 12.
+pub fn builds_announced(line: &str) -> Option<usize> {
+    let rest = line.trim().strip_prefix("these ")?;
+    let (n, tail) = rest.split_once(' ')?;
+    tail.starts_with("derivations will be built").then(|| n.parse().ok()).flatten()
+}
+
+/// `  /nix/store/abc…-hello-2.12.drv` as `hello-2.12`.
+pub fn derivation_name(line: &str) -> Option<&str> {
+    let path = line.trim().strip_prefix("/nix/store/")?.strip_suffix(".drv")?;
+    path.split_once('-').map(|(_, name)| name)
+}
+
+/// Whether cache.nixos.org answers (a few seconds at most).
+async fn cache_answers() -> bool {
+    tokio::process::Command::new("curl")
+        .args(["-fsS", "--max-time", "6", "-o", "/dev/null", "https://cache.nixos.org/nix-cache-info"])
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status()
+        .await
+        .is_ok_and(|s| s.success())
+}
+
 /// Run a command as root, sending each line it prints as progress.
 pub async fn run(emitter: &SignalEmitter<'_>, cwd: &Path, program: &str, args: &[&str]) -> Result<()> {
     let _ = crate::Manager::progress(emitter, &shown(program, args)).await;
@@ -44,6 +73,10 @@ pub async fn run(emitter: &SignalEmitter<'_>, cwd: &Path, program: &str, args: &
     // The build's last lines, for the journal when it fails (the screen gets one line).
     let mut tail: std::collections::VecDeque<String> = std::collections::VecDeque::new();
     let mut assertion = false;
+    // What Nix says it will compile (no cache has it), for the journal and the screen.
+    let mut to_build: Option<usize> = None;
+    let mut names: Vec<String> = Vec::new();
+    let mut listing = false;
     let (mut out_done, mut err_done) = (false, false);
     while !(out_done && err_done) {
         tokio::select! {
@@ -70,6 +103,32 @@ pub async fn run(emitter: &SignalEmitter<'_>, cwd: &Path, program: &str, args: &
                         error = t.trim_start_matches("error:").trim().to_string();
                     }
                     if !t.is_empty() { last = t.to_string(); }
+                    if let Some(n) = builds_announced(t) {
+                        to_build = Some(n);
+                        listing = true;
+                    } else if listing {
+                        match derivation_name(t) {
+                            Some(name) => names.push(name.to_string()),
+                            None => {
+                                listing = false;
+                                let n = to_build.unwrap_or(names.len());
+                                if n > MANY_BUILDS && !cache_answers().await {
+                                    // Every package would compile here, for hours: stop.
+                                    let _ = child.kill().await;
+                                    bail!("{}", nyx_system_proto::OFFLINE);
+                                }
+                                if n > 0 {
+                                    eprintln!("compiling {n} packages no cache has: {}", names.join(", "));
+                                    let shown = names.iter().take(5).cloned().collect::<Vec<_>>().join(", ");
+                                    let more = if n > 5 { format!(" and {} more", n - 5) } else { String::new() };
+                                    let _ = crate::Manager::progress(emitter, &format!(
+                                        "Compiling {n} package{} no download has: {shown}{more}",
+                                        if n == 1 { "" } else { "s" }
+                                    )).await;
+                                }
+                            }
+                        }
+                    }
                     let _ = crate::Manager::progress(emitter, &l).await;
                 }
                 None => err_done = true,
@@ -285,6 +344,14 @@ pub async fn vacuum_journal(config: &Config, megabytes: u32, emitter: &SignalEmi
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn nix_build_lists_are_read() {
+        assert_eq!(builds_announced("these 312 derivations will be built:"), Some(312));
+        assert_eq!(builds_announced("these 2 paths will be fetched (1.2 MiB download):"), None);
+        assert_eq!(derivation_name("  /nix/store/0abc123-rustc-1.95.0.drv"), Some("rustc-1.95.0"));
+        assert_eq!(derivation_name("copying path"), None);
+    }
 
     #[test]
     fn a_staged_change_reaches_the_overrides_only_when_committed() {

@@ -99,6 +99,10 @@ pub struct Item {
     /// System services it turns on.
     #[serde(default)]
     pub services: Vec<String>,
+    /// Services that do as well as [`services`](Item::services): when one of them is on,
+    /// or turned on with it, its own aren't (Distrobox uses Docker instead of Podman).
+    #[serde(default)]
+    pub unless_on: Vec<String>,
     /// Groups the user joins.
     #[serde(default)]
     pub groups: Vec<String>,
@@ -412,6 +416,7 @@ impl Catalog {
         let mut groups = BTreeSet::new();
         let mut plan = Plan::default();
         let mut consent = BTreeSet::new();
+        let mut instead: Vec<&Item> = Vec::new();
         for id in ids {
             let Some(i) = self.item(id) else { bail!("no item {id} in the catalog") };
             if have.has(i) {
@@ -449,7 +454,11 @@ impl Catalog {
             {
                 plan.profiles.push(f.clone());
             }
-            for s in &i.services {
+            if !i.unless_on.is_empty() {
+                // Once every other item's services are known.
+                instead.push(i);
+            }
+            for s in i.services.iter().filter(|_| i.unless_on.is_empty()) {
                 if have.settings.services.get(s) != Some(&true) && services.insert(s.clone()) {
                     let what = SERVICES.iter().find(|(n, _)| n == s).map(|(_, w)| w.to_string()).unwrap_or_default();
                     consent.insert(Consent::Service { service: s.clone(), what });
@@ -460,6 +469,15 @@ impl Catalog {
                 if !member && groups.insert(g.clone()) {
                     let what = GROUPS.iter().find(|(n, _)| n == g).map(|(_, w)| w.to_string()).unwrap_or_default();
                     consent.insert(Consent::Group { group: g.clone(), what });
+                }
+            }
+        }
+        for i in instead {
+            let covered = i.unless_on.iter().any(|s| have.settings.services.get(s) == Some(&true) || services.contains(s));
+            for s in i.services.iter().filter(|_| !covered) {
+                if have.settings.services.get(s) != Some(&true) && services.insert(s.clone()) {
+                    let what = SERVICES.iter().find(|(n, _)| n == s).map(|(_, w)| w.to_string()).unwrap_or_default();
+                    consent.insert(Consent::Service { service: s.clone(), what });
                 }
             }
         }
@@ -1229,6 +1247,25 @@ mod tests {
         let ids: BTreeSet<String> = ["firefox".to_string()].into();
         assert!(c.plan(&ids, "ken", &have).unwrap().is_empty());
         assert_eq!(c.removal(&ids, &have).unwrap().profiles, vec!["flake:nixpkgs#firefox".to_string()]);
+    }
+
+    #[test]
+    fn distrobox_uses_docker_when_docker_is_on_or_comes_with_it() {
+        let c = catalog();
+        let services = |pick: &[&str], have: &Installed| -> Vec<String> {
+            let ids: BTreeSet<String> = pick.iter().map(|s| s.to_string()).collect();
+            c.plan(&ids, "ken", have)
+                .unwrap()
+                .changes
+                .into_iter()
+                .filter_map(|ch| if let Change::Service { name, .. } = ch { Some(name) } else { None })
+                .collect()
+        };
+        assert_eq!(services(&["distrobox"], &Installed::default()), ["podman"]);
+        assert_eq!(services(&["distrobox", "docker"], &Installed::default()), ["docker"]);
+        let mut have = Installed::default();
+        have.settings.services.insert("docker".into(), true);
+        assert!(services(&["distrobox"], &have).is_empty());
     }
 
     #[test]

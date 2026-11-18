@@ -1037,8 +1037,9 @@ category = "containers"
 tier = "welcome"
 packages = ["distrobox"]
 services = ["podman"]
+unless_on = ["docker"]
 bin = "distrobox"
-note = "Runs its containers with Podman, which it turns on."
+note = "Runs its containers with Docker when Docker is on, else with Podman, which it turns on."
 
 [[item]]
 id = "qemu"
