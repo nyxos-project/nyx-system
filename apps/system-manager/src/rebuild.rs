@@ -41,6 +41,9 @@ pub async fn run(emitter: &SignalEmitter<'_>, cwd: &Path, program: &str, args: &
     let mut last = String::new();
     let mut error = String::new();
     let mut offline = false;
+    // The build's last lines, for the journal when it fails (the screen gets one line).
+    let mut tail: std::collections::VecDeque<String> = std::collections::VecDeque::new();
+    let mut assertion = false;
     let (mut out_done, mut err_done) = (false, false);
     while !(out_done && err_done) {
         tokio::select! {
@@ -52,6 +55,17 @@ pub async fn run(emitter: &SignalEmitter<'_>, cwd: &Path, program: &str, args: &
                 Some(l) => {
                     let t = l.trim();
                     offline |= nyx_system_proto::offline_error(t);
+                    if tail.len() == 60 {
+                        tail.pop_front();
+                    }
+                    tail.push_back(l.clone());
+                    // A failed assertion's reason is the first "- " line after its heading;
+                    // its "error:" line says nothing by itself.
+                    if t.starts_with("Failed assertions:") {
+                        assertion = true;
+                    } else if assertion && error.is_empty() && t.starts_with("- ") {
+                        error = t.trim_start_matches("- ").to_string();
+                    }
                     if error.is_empty() && t.starts_with("error:") {
                         error = t.trim_start_matches("error:").trim().to_string();
                     }
@@ -64,6 +78,9 @@ pub async fn run(emitter: &SignalEmitter<'_>, cwd: &Path, program: &str, args: &
     }
     let status = child.wait().await?;
     if !status.success() {
+        for line in &tail {
+            eprintln!("build: {line}");
+        }
         if offline {
             bail!("{}", nyx_system_proto::OFFLINE);
         }

@@ -1020,6 +1020,7 @@ tier = "welcome"
 packages = ["distrobox"]
 services = ["podman"]
 bin = "distrobox"
+note = "Runs its containers with Podman, which it turns on."
 
 [[item]]
 id = "qemu"
