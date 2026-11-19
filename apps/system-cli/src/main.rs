@@ -1,6 +1,7 @@
 //! nyx-system: the System Manager and the configuration layers from a terminal.
 
 mod exit;
+mod progress;
 mod update;
 
 use anyhow::{Context, Result, bail};
@@ -140,6 +141,20 @@ fn resolve_names(c: &Catalog, names: &[&str], ask: bool, mut others: Option<&mut
     Ok(ids)
 }
 
+/// What's being installed or removed, by name: "NordVPN and Mullvad VPN".
+fn names_of(c: &Catalog, ids: &BTreeSet<String>, others: &[String]) -> String {
+    let mut names: Vec<String> = ids.iter().map(|id| c.item(id).map(|i| i.name.clone()).unwrap_or_else(|| id.clone())).collect();
+    names.extend(others.iter().cloned());
+    match names.len() {
+        0 => "nothing".into(),
+        1 => names.remove(0),
+        _ => {
+            let last = names.pop().unwrap_or_default();
+            format!("{} and {last}", names.join(", "))
+        }
+    }
+}
+
 fn scope_label(i: &nyx_catalog::Item) -> &'static str {
     match i.scope() {
         Scope::User => "for you",
@@ -269,17 +284,19 @@ async fn catalog(args: &[&str]) -> Result<()> {
                 println!("Everything's already installed.");
                 return Ok(());
             }
-            for ch in &plan.changes {
-                println!("  {} (for everyone)", serde_json::to_string(ch)?);
+            let names = names_of(&c, &ids, &others);
+            println!("To install: {names}");
+            if plan.rebuilds() {
+                println!("  · for everyone, in one rebuild of the system");
             }
             for f in &plan.flatpaks {
-                println!("  flathub {f} (for you)");
+                println!("  · {f} from Flathub, for you");
             }
-            for f in &plan.profiles {
-                println!("  nix profile {f} (for you)");
+            for f in plan.profiles.iter().filter(|f| !others.iter().any(|o| f.ends_with(&format!("#{o}")))) {
+                println!("  · {f}, for you");
             }
             for consent in &plan.consent {
-                println!("! {}", consent.describe());
+                println!("  ! {}", consent.describe());
             }
             let question = if plan.rebuilds() {
                 "Install? The system is rebuilt once, which asks for the administrator's password."
@@ -291,10 +308,13 @@ async fn catalog(args: &[&str]) -> Result<()> {
             }
             if plan.rebuilds() {
                 let json = serde_json::to_string(&plan.changes)?;
-                println!("{}", with_progress(&p, p.apply(&json)).await?);
+                progress::run(&p, &format!("Installing {names}"), &format!("{names} installed"), p.apply(&json)).await?;
             }
             nyx_catalog::flatpak(&plan.flatpaks, true, |l| eprintln!("{l}"))?;
             nyx_catalog::nix_profile(&plan.profiles, true, |l| eprintln!("{l}"))?;
+            if !plan.rebuilds() {
+                eprintln!("\n● Done: {names} installed");
+            }
         }
         ["remove", names @ ..] if !names.is_empty() => {
             let p = proxy().await?;
@@ -318,12 +338,16 @@ async fn catalog(args: &[&str]) -> Result<()> {
                 println!("None of those are installed.");
                 return Ok(());
             }
+            let removed = names_of(&c, &ids, &others);
             if plan.rebuilds() {
                 let json = serde_json::to_string(&plan.changes)?;
-                println!("{}", with_progress(&p, p.apply(&json)).await?);
+                progress::run(&p, &format!("Removing {removed}"), &format!("{removed} removed"), p.apply(&json)).await?;
             }
             nyx_catalog::flatpak(&plan.flatpaks, false, |l| eprintln!("{l}"))?;
             nyx_catalog::nix_profile(&plan.profiles, false, |l| eprintln!("{l}"))?;
+            if !plan.rebuilds() {
+                eprintln!("\n● Done: {removed} removed");
+            }
         }
         // Per-user software NyxOS installed for everyone, into this person's profile.
         ["move", names @ ..] if all || !names.is_empty() => {
@@ -349,7 +373,7 @@ async fn catalog(args: &[&str]) -> Result<()> {
             nyx_catalog::nix_profile(&plan.profiles, true, |l| eprintln!("{l}"))?;
             if plan.rebuilds() {
                 let json = serde_json::to_string(&plan.changes)?;
-                println!("{}", with_progress(&p, p.apply(&json)).await?);
+                progress::run(&p, "Moving it to your own apps", "moved to your own apps", p.apply(&json)).await?;
             }
         }
         _ => return Err(exit::fail(exit::USAGE, "see nyx-system --help")),
@@ -395,7 +419,7 @@ async fn apply(changes: Vec<Change>) -> Result<()> {
     }
     let p = proxy().await?;
     let json = serde_json::to_string(&changes)?;
-    println!("{}", with_progress(&p, p.apply(&json)).await?);
+    progress::run(&p, "Changing the system", "the change is in place", p.apply(&json)).await?;
     Ok(())
 }
 
@@ -535,7 +559,7 @@ async fn run(args: &[&str]) -> Result<()> {
         ["update", rest @ ..] => update::run(rest).await?,
         ["rollback"] => {
             let p = proxy().await?;
-            println!("{}", with_progress(&p, p.rollback()).await?);
+            progress::run(&p, "Going back to the previous system", "the previous system is back", p.rollback()).await?;
         }
         ["clean", rest @ ..] if rest.len() <= 1 => {
             let days: u32 = rest.first().map(|d| d.parse()).transpose().context("DAYS is a number")?.unwrap_or(14);
@@ -588,7 +612,9 @@ async fn main() {
     let args: Vec<String> = std::env::args().skip(1).collect();
     let args: Vec<&str> = args.iter().map(String::as_str).collect();
     if let Err(e) = run(&args).await {
-        eprintln!("nyx-system: {e:#}");
+        if !e.chain().any(|c| c.is::<exit::Shown>()) {
+            eprintln!("nyx-system: {e:#}");
+        }
         std::process::exit(exit::code(&e));
     }
 }

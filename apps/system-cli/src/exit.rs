@@ -40,14 +40,32 @@ pub fn fail(code: i32, message: impl Into<String>) -> anyhow::Error {
     Exit { code, message: message.into() }.into()
 }
 
+/// A failure already shown in full (by the progress display): exit with its code,
+/// saying nothing more.
+#[derive(Debug)]
+pub struct Shown(pub i32);
+
+impl std::fmt::Display for Shown {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("(shown above)")
+    }
+}
+
+impl std::error::Error for Shown {}
+
 /// The exit code for `e`.
 pub fn code(e: &anyhow::Error) -> i32 {
+    if let Some(Shown(code)) = e.chain().find_map(|c| c.downcast_ref::<Shown>()) {
+        return *code;
+    }
     if let Some(x) = e.chain().find_map(|c| c.downcast_ref::<Exit>()) {
         return x.code;
     }
     let text = format!("{e:#}");
     if text.contains("another update is already running") || text.contains("another system change is running") {
         BUSY
+    } else if text.contains(nyx_system_proto::OFFLINE) {
+        OFFLINE
     } else {
         FAILED
     }
