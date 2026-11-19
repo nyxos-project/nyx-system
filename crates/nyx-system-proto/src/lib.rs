@@ -147,6 +147,8 @@ pub const SERVICES: &[(&str, &str)] = &[
     ("libvirtd", "Virtual machines (libvirt)"),
     ("ollama", "Ollama, local AI models"),
     ("mullvad", "Mullvad VPN"),
+    ("nordvpn", "NordVPN (its own app; unfree)"),
+    ("expressvpn", "ExpressVPN (its own app; unfree)"),
 ];
 
 /// Groups the manager may add users to, with what membership allows.
@@ -156,6 +158,7 @@ pub const GROUPS: &[(&str, &str)] = &[
     ("incus-admin", "Manage Incus containers and virtual machines"),
     ("kvm", "Use hardware virtualization directly"),
     ("dialout", "Use serial ports"),
+    ("nordvpn", "Use NordVPN"),
 ];
 
 /// What a download failing for want of a network says, everywhere the same.

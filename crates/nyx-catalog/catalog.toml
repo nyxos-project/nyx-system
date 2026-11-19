@@ -1081,6 +1081,28 @@ services = ["mullvad"]
 bin = "mullvad"
 
 [[item]]
+id = "nordvpn"
+name = "NordVPN"
+summary = "NordVPN's own app and its background service: NordLynx, the fastest server, countries and cities."
+category = "network"
+tier = "store"
+services = ["nordvpn"]
+groups = ["nordvpn"]
+bin = "nordvpn"
+aliases = ["nord"]
+note = "NordVPN's app is unfree; installing it accepts Nord's terms. Sign in in Settings › VPN."
+
+[[item]]
+id = "expressvpn"
+name = "ExpressVPN"
+summary = "ExpressVPN's own app and its background service; activate it with your code."
+category = "network"
+tier = "store"
+services = ["expressvpn"]
+bin = "expressvpn"
+note = "ExpressVPN's app is unfree; installing it accepts its terms. Activate it in Settings › VPN."
+
+[[item]]
 id = "proton-vpn"
 name = "Proton VPN"
 summary = "Proton's VPN app."
